@@ -146,8 +146,10 @@ class SyntheticRecord(_Model):
     # чистого угла не должен получить метку `glare` из-за блика в центре.
     masks: dict[str, str] = Field(default_factory=dict)
 
-    width: int = Field(ge=0)
-    height: int = Field(ge=0)
+    # Нули, если страница ещё не отрисована: в режиме «только рецепт» размер
+    # неизвестен, он определяется при восстановлении.
+    width: int = Field(default=0, ge=0)
+    height: int = Field(default=0, ge=0)
 
     @property
     def positive(self) -> list[str]:

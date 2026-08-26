@@ -206,6 +206,16 @@ class SynthConfig(_Section):
         return (float(bounds[0]), float(bounds[1]))
 
 
+class DatasetConfig(_Section):
+    patches_per_page: int = Field(gt=0)
+    min_ink_frac: float = Field(ge=0.0, lt=1.0)
+    max_patch_attempts: int = Field(gt=0)
+    min_mask_overlap: float = Field(ge=0.0, le=1.0)
+    brightness: float = Field(ge=0.0, lt=1.0)
+    contrast: float = Field(ge=0.0, lt=1.0)
+    workers: int = Field(ge=0)
+
+
 class ModelConfig(_Section):
     backbone: str
     pretrained: bool = True
@@ -261,6 +271,7 @@ class Config(_Section):
     labeling: LabelingConfig
     split: SplitConfig
     synth: SynthConfig
+    dataset: DatasetConfig
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
