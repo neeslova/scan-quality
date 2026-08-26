@@ -18,6 +18,8 @@ from typing import Optional, Union
 from src.config import Config, VerdictConfig, load_config
 from src.io.loader import LoadedPage, load_page, load_pages
 from src.metrics.baseline import analyze_page
+from src.ocr.engine import read_page, shared_engine
+from src.ocr.readability import analyze_words, unreadable_score
 from src.schema import DefectScore, QualityReport, Verdict
 
 logger = logging.getLogger(__name__)
@@ -45,18 +47,42 @@ def quality_score(scores: Mapping[str, float]) -> float:
     return round(1.0 - max(scores.values()), 4)
 
 
-def build_report(page: LoadedPage, config: Config, elapsed_ms: float) -> QualityReport:
+def _run_ocr(page: LoadedPage, config: Config):
+    """OCR-слой: (результат, скор unreadable или None). Ошибки не роняют отчёт."""
+    engine = shared_engine(config.ocr.engine, config.ocr.languages)
+    words = read_page(page.gray, engine, config.ocr.work_side)
+    result = analyze_words(words, config, page.width * page.height, engine.name)
+    return result, unreadable_score(result, config)
+
+
+def build_report(
+    page: LoadedPage,
+    config: Config,
+    elapsed_ms: float,
+    with_ocr: bool = False,
+) -> QualityReport:
     """Собирает отчёт по уже загруженной странице."""
     raw, scores, not_applicable = analyze_page(page, config)
 
     defects = [
         DefectScore(label=label, score=score, source="cv") for label, score in scores.items()
     ]
+
+    ocr_result = None
+    if with_ocr:
+        ocr_result, unreadable = _run_ocr(page, config)
+        if unreadable is None:
+            # Пустая страница не нечитаема: распознавать нечего, а не плохо.
+            not_applicable = sorted({*not_applicable, "unreadable"})
+        else:
+            scores["unreadable"] = unreadable
+            defects.append(DefectScore(label="unreadable", score=unreadable, source="ocr"))
+
     defects.sort(key=lambda d: d.score, reverse=True)
 
     name = page.source.name if page.page == 0 else f"{page.source.name}#{page.page + 1}"
     return QualityReport(
-        pipeline_version="cv-baseline",
+        pipeline_version="cv-baseline+ocr" if with_ocr else "cv-baseline",
         image=name,
         width=page.width,
         height=page.height,
@@ -65,6 +91,7 @@ def build_report(page: LoadedPage, config: Config, elapsed_ms: float) -> Quality
         defects=defects,
         cv_metrics={key: round(value, 4) for key, value in raw.items()},
         not_applicable=not_applicable,
+        ocr=ocr_result,
         elapsed_ms=round(elapsed_ms, 2),
     )
 
@@ -73,8 +100,9 @@ def analyze(
     image_path: Union[str, Path],
     config: Optional[Config] = None,
     page: int = 0,
+    with_ocr: bool = False,
 ) -> QualityReport:
-    """Одна страница файла -> отчёт."""
+    """Одна страница файла -> отчёт. OCR по флагу: он в разы медленнее метрик."""
     started = time.perf_counter()
     cfg = config or load_config()
     loaded = load_page(
@@ -84,7 +112,7 @@ def analyze(
         page=page,
         allow_upscale=cfg.data.allow_upscale,
     )
-    report = build_report(loaded, cfg, (time.perf_counter() - started) * 1000)
+    report = build_report(loaded, cfg, (time.perf_counter() - started) * 1000, with_ocr)
     logger.info(
         "%s: %s (score %.2f, %.0f мс)",
         report.image,

@@ -109,6 +109,37 @@ class CVConfig(_Section):
         return self
 
 
+class AnchorPair(_Section):
+    """Пара якорей без указания метрики: имя метрики задаётся ключом секции."""
+
+    good: float
+    bad: float
+
+    @model_validator(mode="after")
+    def _check_anchors(self) -> AnchorPair:
+        if self.good == self.bad:
+            raise ValueError("good и bad не должны совпадать")
+        return self
+
+
+class OCRConfig(_Section):
+    engine: Literal["easyocr", "tesseract"] = "easyocr"
+    languages: list[str] = Field(min_length=1)
+    work_side: int = Field(gt=0)
+    min_confidence: float = Field(ge=0.0, le=1.0)
+    extra_chars: str
+    unreadable: dict[str, AnchorPair]
+    min_boxes: int = Field(ge=0)
+    unreadable_threshold: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check_signals(self) -> OCRConfig:
+        expected = {"mean_confidence", "garbage_ratio", "nonword_ratio"}
+        if set(self.unreadable) != expected:
+            raise ValueError(f"ocr.unreadable: нужны ровно {sorted(expected)}")
+        return self
+
+
 class LabelingConfig(_Section):
     auto_labels: list[str] = Field(default_factory=list)
     suggest_threshold: float = Field(ge=0.0, le=1.0)
@@ -186,6 +217,7 @@ class Config(_Section):
     paths: PathsConfig
     data: DataConfig
     cv: CVConfig
+    ocr: OCRConfig
     labeling: LabelingConfig
     split: SplitConfig
     model: ModelConfig

@@ -132,12 +132,28 @@ def test_label_frequencies(config: Config) -> None:
 
 def test_read_labels_skips_broken_lines(tmp_path) -> None:
     path = tmp_path / "labels.jsonl"
-    good = LabelRecord(image="a.jpg", document="a", corpus="t", labels={"blur": True})
+    first = LabelRecord(image="a.jpg", document="a", corpus="t", labels={"blur": True})
+    second = LabelRecord(image="b.jpg", document="b", corpus="t", labels={"blur": False})
     path.write_text(
-        good.model_dump_json() + "\n" + "{не json}\n" + "\n" + good.model_dump_json() + "\n",
+        first.model_dump_json() + "\n{не json}\n\n" + second.model_dump_json() + "\n",
         encoding="utf-8",
     )
     assert len(read_labels(path)) == 2
+
+
+def test_read_labels_applies_last_wins(tmp_path) -> None:
+    """Переразмеченная страница не должна считаться дважды и раздувать набор."""
+    path = tmp_path / "labels.jsonl"
+    old = LabelRecord(image="a.jpg", document="a", corpus="t", labels={"blur": True})
+    new = LabelRecord(image="a.jpg", document="a", corpus="t", labels={"blur": False})
+    path.write_text(old.model_dump_json() + "\n" + new.model_dump_json() + "\n", encoding="utf-8")
+
+    records = read_labels(path)
+    assert len(records) == 1
+    assert records[0].labels["blur"] is False
+
+    # История правок доступна отдельно: по ней видно, где предразметка врёт
+    assert len(read_labels(path, dedupe=False)) == 2
 
 
 def test_write_split_creates_three_files(config: Config, tmp_path) -> None:

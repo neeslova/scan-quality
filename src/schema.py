@@ -33,7 +33,11 @@ class DefectScore(_Model):
 class OCRResult(_Model):
     engine: str
     mean_confidence: float = Field(ge=0.0, le=1.0)
+    # Доля символов вне алфавита языка. С движком, у которого закрытый алфавит
+    # (EasyOCR), всегда 0 — там работает nonword_ratio.
     garbage_ratio: float = Field(ge=0.0, le=1.0)
+    # Доля токенов, не похожих на слова: выживает при закрытом алфавите.
+    nonword_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     text_density: float = Field(ge=0.0)
     n_boxes: int = Field(ge=0)
 
@@ -108,6 +112,9 @@ class LabelRecord(_Model):
 
     labels: dict[str, bool] = Field(default_factory=dict)
     prelabel: dict[str, float] = Field(default_factory=dict)
+    # Скоры меток, выведенных автоматически (unreadable из OCR): бинарная метка
+    # в `labels` теряет градацию, а для анализа порога она нужна.
+    derived: dict[str, float] = Field(default_factory=dict)
 
     annotator: str = ""
     timestamp: str = ""
