@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -45,8 +45,54 @@ class AggregationConfig(_Section):
 class DataConfig(_Section):
     patch_size: int = Field(gt=0)
     target_dpi: int = Field(gt=0)
+    dpi_fallback: Literal["a4", "none"] = "a4"
     grid: GridConfig
     aggregation: AggregationConfig
+
+
+class ScoreMapping(_Section):
+    """Линейный перевод сырой метрики в скор 0..1 по двум якорям."""
+
+    metric: str
+    good: float
+    bad: float
+
+    @model_validator(mode="after")
+    def _check_anchors(self) -> ScoreMapping:
+        if self.good == self.bad:
+            raise ValueError(f"cv.scores[{self.metric}]: good и bad не должны совпадать")
+        return self
+
+
+class CVConfig(_Section):
+    glare_threshold: int = Field(ge=0, le=255)
+    glare_min_cluster_frac: float = Field(gt=0.0, lt=1.0)
+    glare_flat_window_frac: float = Field(gt=0.0, lt=1.0)
+    glare_flat_std: float = Field(gt=0.0)
+    glare_min_excess: int = Field(ge=0, le=255)
+
+    ink_block_frac: float = Field(gt=0.0, lt=1.0)
+    ink_offset: int = Field(ge=0, le=255)
+
+    shadow_rel_threshold: float = Field(gt=0.0, lt=1.0)
+    shadow_background_frac: float = Field(gt=0.0, lt=1.0)
+
+    skew_max_angle: float = Field(gt=0.0, le=45.0)
+    skew_coarse_step: float = Field(gt=0.0)
+    skew_fine_step: float = Field(gt=0.0)
+    skew_work_height: int = Field(gt=0)
+
+    min_ink_frac: float = Field(ge=0.0, lt=1.0)
+    line_min_row_ink_frac: float = Field(ge=0.0, lt=1.0)
+    streak_smooth_frac: float = Field(gt=0.0, lt=1.0)
+
+    scores: dict[str, ScoreMapping]
+
+    @model_validator(mode="after")
+    def _check_steps(self) -> CVConfig:
+        if self.skew_fine_step > self.skew_coarse_step:
+            raise ValueError("cv: skew_fine_step должен быть не больше skew_coarse_step")
+        return self
 
 
 class ModelConfig(_Section):
@@ -99,6 +145,7 @@ class Config(_Section):
     labels: list[str]
     paths: PathsConfig
     data: DataConfig
+    cv: CVConfig
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
@@ -126,6 +173,12 @@ class Config(_Section):
                 "data.aggregation должна покрывать ровно labels; "
                 f"не назначены: {missing}, лишние: {unknown}"
             )
+
+        # CV-baseline закрывает не все метки (unreadable приходит из OCR, С3),
+        # но выдумывать метки, которых нет в таксономии, он не должен.
+        unknown_cv = sorted(set(self.cv.scores) - expected)
+        if unknown_cv:
+            raise ValueError(f"cv.scores: метки вне таксономии: {unknown_cv}")
         return self
 
     @property
