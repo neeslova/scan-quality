@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from typing import Optional
 
 import numpy as np
 
 from src.config import Config
+from src.imaging import mid_tone_fraction
 from src.io.loader import LoadedPage
 from src.io.patches import grid, select_informative
 from src.metrics import blur, contrast, geometry, glare, noise, shadow, streaks, text_scale
@@ -113,6 +115,9 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         "rms_contrast": contrast.rms_contrast(gray),
         "dynamic_range": contrast.dynamic_range(gray),
         "ink_paper_gap": gap,
+        # Доля средних тонов: ниже cv.bitonal_max_mid_frac скан битональный,
+        # и метрики по градациям серого на нём неприменимы.
+        "mid_tone_frac": mid_tone_fraction(gray, cfg.bitonal_mid_low, cfg.bitonal_mid_high),
         # пересвет
         "glare_bright_frac": glare_stats.bright_frac,
         "glare_cluster_frac": glare_stats.cluster_frac,
@@ -130,8 +135,9 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         "min_margin_frac": margins.minimum,
         # масштаб текста
         "line_height_px": scale.line_height,
-        # То же, но в пикселях исходного файла: загрузчик привёл страницу к 300 dpi,
-        # и после апскейла скан 150 dpi по высоте строки уже не отличить от нормального.
+        # То же, но в пикселях исходного файла. Загрузчик мог уменьшить страницу
+        # (скан 600 dpi -> 300), и тогда высота строки в рабочем разрешении занижена
+        # относительно того, что реально было в файле.
         "source_line_height_px": scale.line_height * _source_scale(page),
         "n_lines": float(scale.n_lines),
         "text_density": scale.text_density,
@@ -146,10 +152,30 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
     }
 
 
-def scores_from_metrics(raw: Mapping[str, float], config: Config) -> dict[str, float]:
+def inapplicable_labels(raw: Mapping[str, float], config: Config) -> set[str]:
+    """Метки, которые на этой странице измерять нечем.
+
+    На битональном скане (факс, микрофильм, режим Ч/Б) разрыв бумага-чернила всегда
+    максимален, а шум обнулён самой бинаризацией. Формально метрики посчитаются и
+    выдадут уверенный ноль — но это ноль от отсутствия шкалы, а не от отсутствия
+    дефекта. Такую метку честнее не выдавать вовсе.
+    """
+    if raw.get("mid_tone_frac", 1.0) < config.cv.bitonal_max_mid_frac:
+        return {"low_contrast", "noise"}
+    return set()
+
+
+def scores_from_metrics(
+    raw: Mapping[str, float],
+    config: Config,
+    skip: Optional[Collection[str]] = None,
+) -> dict[str, float]:
     """Сырые метрики -> вероятности дефектов 0..1 по якорям из конфига."""
+    skipped = set(skip or ())
     scores: dict[str, float] = {}
     for label, mapping in config.cv.scores.items():
+        if label in skipped:
+            continue
         if mapping.metric not in raw:
             logger.warning("Метрика %s для метки %s не посчитана — пропуск", mapping.metric, label)
             continue
@@ -157,7 +183,10 @@ def scores_from_metrics(raw: Mapping[str, float], config: Config) -> dict[str, f
     return scores
 
 
-def analyze_page(page: LoadedPage, config: Config) -> tuple[dict[str, float], dict[str, float]]:
-    """Удобная обёртка: (сырые метрики, скоры по меткам)."""
+def analyze_page(
+    page: LoadedPage, config: Config
+) -> tuple[dict[str, float], dict[str, float], list[str]]:
+    """Удобная обёртка: (сырые метрики, скоры, неприменимые метки)."""
     raw = compute_raw_metrics(page, config)
-    return raw, scores_from_metrics(raw, config)
+    skip = inapplicable_labels(raw, config)
+    return raw, scores_from_metrics(raw, config, skip), sorted(skip)

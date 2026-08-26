@@ -101,19 +101,42 @@ def test_clean_page_is_not_rejected(config: Config, scan: str) -> None:
     assert report.scores()["skew"] < 0.3
 
 
-def test_low_resolution_survives_dpi_normalization(config: Config, tmp_path) -> None:
-    """Скан 150 dpi загрузчик растянет до 300 — метка low_resolution обязана уцелеть.
-
-    После апскейла высота строки в пикселях возвращается к норме, поэтому метрика
-    считается в пикселях ИСХОДНОГО файла. Иначе низкое разрешение просто исчезает.
-    """
+def test_low_resolution_detected(config: Config, tmp_path) -> None:
+    """Скан 150 dpi остаётся в родном разрешении, и low_resolution срабатывает."""
     path = tmp_path / "lowres.png"
     fx.save(fx.text_page(width=620, height=800, line_height=12, line_gap=9, margin=45), path, 150)
 
     report = analyze(path, config)
-    assert report.width == 1240  # растянут до 300 dpi
+    assert (report.width, report.height) == (620, 800)  # не растянут
+    assert report.cv_metrics["dpi"] == pytest.approx(150.0, rel=1e-3)
     assert report.cv_metrics["source_line_height_px"] < 16
     assert report.scores()["low_resolution"] > 0.7
+
+
+def test_bitonal_scan_marks_metrics_not_applicable(config: Config, tmp_path) -> None:
+    """На битональном скане low_contrast и noise неизмеримы — их не должно быть в отчёте.
+
+    Разрыв бумага/чернила там всегда максимален, а шум обнулён самой бинаризацией:
+    формально метрики дадут уверенный ноль, но это ноль от отсутствия шкалы.
+    """
+    page = fx.text_page(width=1200, height=1600)
+    bitonal = ((page > 128) * 255).astype(page.dtype)
+    path = tmp_path / "fax.png"
+    fx.save(bitonal, path, 300)
+
+    report = analyze(path, config)
+    assert report.cv_metrics["mid_tone_frac"] < config.cv.bitonal_max_mid_frac
+    assert report.not_applicable == ["low_contrast", "noise"]
+    assert "low_contrast" not in report.scores()
+    assert "noise" not in report.scores()
+    # полутоновая страница ведёт себя как раньше
+    assert analyze(scan_path(tmp_path), config).not_applicable == []
+
+
+def scan_path(tmp_path) -> str:
+    path = tmp_path / "halftone.png"
+    fx.save(fx.text_page(width=1200, height=1600), path, 300)
+    return str(path)
 
 
 def test_analyze_is_deterministic(config: Config, scan: str) -> None:

@@ -68,6 +68,19 @@ def binarize_ink(
     )
 
 
+def mid_tone_fraction(gray: np.ndarray, low: int = 40, high: int = 215) -> float:
+    """Доля пикселей в средних тонах.
+
+    Отличает полутоновый скан от битонального. У битонального (факс, микрофильм,
+    режим «чёрно-белый» на МФУ) почти всё лежит в двух пиках у 0 и 255, средних
+    тонов почти нет — и метрики, которые опираются на градации серого, там
+    измерять нечего.
+    """
+    if gray.size == 0:
+        return 0.0
+    return float(((gray > low) & (gray < high)).mean())
+
+
 def local_std(gray: np.ndarray, window: int) -> np.ndarray:
     """σ в скользящем окне через E[x²] - E[x]²."""
     values = gray.astype(np.float64)

@@ -53,6 +53,9 @@ class QualityReport(_Model):
     defects: list[DefectScore] = Field(default_factory=list)
 
     cv_metrics: dict[str, float] = Field(default_factory=dict)
+    # Метки, которые на этой странице измерить нечем (например, low_contrast и noise
+    # на битональном скане). Их отсутствие в defects — не «дефекта нет», а «не измерено».
+    not_applicable: list[str] = Field(default_factory=list)
     ocr: Optional[OCRResult] = None
 
     heatmap_path: Optional[str] = None

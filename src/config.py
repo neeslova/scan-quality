@@ -46,6 +46,7 @@ class DataConfig(_Section):
     patch_size: int = Field(gt=0)
     target_dpi: int = Field(gt=0)
     dpi_fallback: Literal["a4", "none"] = "a4"
+    allow_upscale: bool = False
     grid: GridConfig
     aggregation: AggregationConfig
 
@@ -74,6 +75,10 @@ class CVConfig(_Section):
     ink_block_frac: float = Field(gt=0.0, lt=1.0)
     ink_offset: int = Field(ge=0, le=255)
 
+    bitonal_mid_low: int = Field(ge=0, le=255)
+    bitonal_mid_high: int = Field(ge=0, le=255)
+    bitonal_max_mid_frac: float = Field(gt=0.0, lt=1.0)
+
     shadow_rel_threshold: float = Field(gt=0.0, lt=1.0)
     shadow_background_frac: float = Field(gt=0.0, lt=1.0)
 
@@ -92,6 +97,8 @@ class CVConfig(_Section):
     def _check_steps(self) -> CVConfig:
         if self.skew_fine_step > self.skew_coarse_step:
             raise ValueError("cv: skew_fine_step должен быть не больше skew_coarse_step")
+        if self.bitonal_mid_low >= self.bitonal_mid_high:
+            raise ValueError("cv: требуется bitonal_mid_low < bitonal_mid_high")
         return self
 
 

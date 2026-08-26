@@ -89,11 +89,29 @@ def _rescale(gray: np.ndarray, factor: float) -> np.ndarray:
 
 
 def _normalize_dpi(
-    gray: np.ndarray, source_dpi: Optional[float], target_dpi: Optional[int]
+    gray: np.ndarray,
+    source_dpi: Optional[float],
+    target_dpi: Optional[int],
+    allow_upscale: bool = False,
 ) -> tuple[np.ndarray, float]:
+    """Приводит страницу к целевому dpi. По умолчанию — только вниз.
+
+    Апскейл запрещён не из экономии: растягивание скана 200 dpi до 300 кубической
+    интерполяцией сглаживает ступенчатые края букв, и метрики резкости честно
+    показывают размытие, которого в исходнике не было. Дефект создавался бы самим
+    загрузчиком. Скан ниже целевого dpi остаётся в родном разрешении, а его
+    настоящий dpi возвращается наружу — метрики масштаба опираются на него.
+    """
     if target_dpi is None or source_dpi is None:
         return gray, float(source_dpi or 0.0)
-    return _rescale(gray, target_dpi / source_dpi), float(target_dpi)
+
+    factor = target_dpi / source_dpi
+    if factor > 1.0 and not allow_upscale:
+        logger.debug(
+            "dpi %.0f ниже целевого %d — оставляем родное разрешение", source_dpi, target_dpi
+        )
+        return gray, float(source_dpi)
+    return _rescale(gray, factor), float(target_dpi)
 
 
 def _load_pdf_pages(
@@ -121,6 +139,7 @@ def load_pages(
     path: Union[str, Path],
     target_dpi: Optional[int] = 300,
     dpi_fallback: str = "a4",
+    allow_upscale: bool = False,
 ) -> list[LoadedPage]:
     """Читает файл целиком: картинка -> одна страница, PDF -> все страницы."""
     src = Path(path)
@@ -142,7 +161,7 @@ def load_pages(
     gray = _imread_unicode(src)
     original_size = (gray.shape[1], gray.shape[0])
     source_dpi = _read_dpi(src) or _guess_dpi(gray.shape[0], gray.shape[1], dpi_fallback)
-    gray, dpi = _normalize_dpi(gray, source_dpi, target_dpi)
+    gray, dpi = _normalize_dpi(gray, source_dpi, target_dpi, allow_upscale)
 
     logger.debug(
         "%s: %dx%d -> %dx%d при %.0f dpi",
@@ -161,6 +180,7 @@ def load_page(
     target_dpi: Optional[int] = 300,
     dpi_fallback: str = "a4",
     page: int = 0,
+    allow_upscale: bool = False,
 ) -> LoadedPage:
     """Одна страница. Для многостраничных PDF — по индексу."""
     src = Path(path)
@@ -171,5 +191,7 @@ def load_page(
         gray, dpi, index, size = rendered[0]
         return LoadedPage(gray=gray, dpi=dpi, source=src, page=index, original_size=size)
 
-    pages = load_pages(src, target_dpi=target_dpi, dpi_fallback=dpi_fallback)
+    pages = load_pages(
+        src, target_dpi=target_dpi, dpi_fallback=dpi_fallback, allow_upscale=allow_upscale
+    )
     return pages[page]

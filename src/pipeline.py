@@ -47,7 +47,7 @@ def quality_score(scores: Mapping[str, float]) -> float:
 
 def build_report(page: LoadedPage, config: Config, elapsed_ms: float) -> QualityReport:
     """Собирает отчёт по уже загруженной странице."""
-    raw, scores = analyze_page(page, config)
+    raw, scores, not_applicable = analyze_page(page, config)
 
     defects = [
         DefectScore(label=label, score=score, source="cv") for label, score in scores.items()
@@ -64,6 +64,7 @@ def build_report(page: LoadedPage, config: Config, elapsed_ms: float) -> Quality
         quality_score=quality_score(scores),
         defects=defects,
         cv_metrics={key: round(value, 4) for key, value in raw.items()},
+        not_applicable=not_applicable,
         elapsed_ms=round(elapsed_ms, 2),
     )
 
@@ -81,6 +82,7 @@ def analyze(
         target_dpi=cfg.data.target_dpi,
         dpi_fallback=cfg.data.dpi_fallback,
         page=page,
+        allow_upscale=cfg.data.allow_upscale,
     )
     report = build_report(loaded, cfg, (time.perf_counter() - started) * 1000)
     logger.info(
@@ -101,7 +103,10 @@ def analyze_all_pages(
     cfg = config or load_config()
     reports: list[QualityReport] = []
     for loaded in load_pages(
-        image_path, target_dpi=cfg.data.target_dpi, dpi_fallback=cfg.data.dpi_fallback
+        image_path,
+        target_dpi=cfg.data.target_dpi,
+        dpi_fallback=cfg.data.dpi_fallback,
+        allow_upscale=cfg.data.allow_upscale,
     ):
         started = time.perf_counter()
         reports.append(build_report(loaded, cfg, (time.perf_counter() - started) * 1000))

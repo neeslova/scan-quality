@@ -40,6 +40,8 @@ METRIC_ROWS: list[tuple[str, str]] = [
     ("glare_cluster_frac", "Пересвет, доля площади"),
     ("shadow_frac", "Тень, доля площади"),
     ("streak_energy", "Полосы, энергия"),
+    ("mid_tone_frac", "Доля средних тонов"),
+    ("dpi", "Рабочий dpi"),
     ("n_informative_patches", "Патчей с текстом"),
 ]
 
@@ -74,12 +76,10 @@ def _run(image_path: Optional[str], config: Config):
         return EMPTY
 
     report = analyze(image_path, config)
-    return (
-        VERDICT_LABELS[report.verdict],
-        report.scores(),
-        _metrics_table(report),
-        report.model_dump(mode="json"),
-    )
+    verdict = VERDICT_LABELS[report.verdict]
+    if report.not_applicable:
+        verdict += f"   ·   не измерено: {', '.join(report.not_applicable)}"
+    return verdict, report.scores(), _metrics_table(report), report.model_dump(mode="json")
 
 
 def build_demo(config: Config):
