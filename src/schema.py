@@ -124,3 +124,27 @@ class LabelRecord(_Model):
     @property
     def positive(self) -> list[str]:
         return sorted(label for label, present in self.labels.items() if present)
+
+
+class SyntheticRecord(_Model):
+    """Одна сгенерированная страница. Метки известны по построению."""
+
+    image: str
+    reference: str  # чистая страница, из которой сделана
+    # Документ наследуется от эталона: иначе деградированная копия тестовой
+    # страницы вернулась бы в обучение и утечка №1 прошла бы через синтетику.
+    document: str
+    corpus: str
+
+    labels: dict[str, bool] = Field(default_factory=dict)
+    severities: dict[str, float] = Field(default_factory=dict)
+    # Метка -> путь к маске области. Только для локальных дефектов: патч из
+    # чистого угла не должен получить метку `glare` из-за блика в центре.
+    masks: dict[str, str] = Field(default_factory=dict)
+
+    width: int = Field(ge=0)
+    height: int = Field(ge=0)
+
+    @property
+    def positive(self) -> list[str]:
+        return sorted(label for label, present in self.labels.items() if present)

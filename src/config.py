@@ -166,6 +166,46 @@ class SplitConfig(_Section):
         return self
 
 
+class RangePair(_Section):
+    """[значение при severity=0, значение при severity=1]. Порядок может убывать."""
+
+    min: float
+    max: float
+
+
+class ReferenceConfig(_Section):
+    max_defect_score: float = Field(ge=0.0, le=1.0)
+    count: int = Field(gt=0)
+
+
+class SynthConfig(_Section):
+    seed: int
+    target_total: int = Field(gt=0)
+    max_defects_per_image: int = Field(gt=0)
+    min_label_share: float = Field(ge=0.0, lt=1.0)
+    base_probability: float = Field(gt=0.0, le=1.0)
+    severity: RangePair
+    reference: ReferenceConfig
+    # Ключ — имя деградации, значение — {параметр: [начало, конец]}.
+    params: dict[str, dict[str, list[float]]]
+
+    @model_validator(mode="after")
+    def _check_params(self) -> SynthConfig:
+        for name, block in self.params.items():
+            for key, bounds in block.items():
+                if len(bounds) != 2:
+                    raise ValueError(f"synth.params.{name}.{key}: нужно ровно два значения")
+                if bounds[0] == bounds[1]:
+                    raise ValueError(f"synth.params.{name}.{key}: границы совпадают")
+        if self.severity.min > self.severity.max:
+            raise ValueError("synth.severity: min должен быть не больше max")
+        return self
+
+    def span(self, name: str, key: str) -> tuple[float, float]:
+        bounds = self.params[name][key]
+        return (float(bounds[0]), float(bounds[1]))
+
+
 class ModelConfig(_Section):
     backbone: str
     pretrained: bool = True
@@ -220,6 +260,7 @@ class Config(_Section):
     ocr: OCRConfig
     labeling: LabelingConfig
     split: SplitConfig
+    synth: SynthConfig
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
