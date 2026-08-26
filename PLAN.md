@@ -237,7 +237,7 @@ verdict:
 ```python
 # notebooks/train.ipynb — весь ноутбук
 from google.colab import drive; drive.mount('/content/drive')
-!git clone https://github.com/<user>/scan-quality.git
+!git clone https://github.com/neeslova/scan-quality.git
 !cd scan-quality && pip install -e . -q
 !mkdir -p /content/data && tar -xf /content/drive/MyDrive/scanq/dataset.tar -C /content/data
 !cd scan-quality && python -m src.models.train \
