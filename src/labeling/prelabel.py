@@ -89,7 +89,7 @@ def read_prelabels(path: Union[str, Path]) -> list[PrelabelRecord]:
     target = Path(path)
     if not target.is_file():
         return records
-    with target.open("r", encoding="utf-8") as fh:
+    with target.open("r", encoding="utf-8-sig") as fh:
         for number, line in enumerate(fh, 1):
             line = line.strip()
             if not line:

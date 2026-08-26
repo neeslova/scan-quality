@@ -10,9 +10,15 @@ import pytest
 
 from src.config import Config, load_config
 from src.data.degrade import DEGRADATIONS
-from src.data.generate import held_out_documents, pick_labels, select_references
+from src.data.generate import (
+    downscale_mask,
+    held_out_documents,
+    pick_labels,
+    select_references,
+)
 from src.labeling.app import append_label
 from src.schema import LabelRecord, PrelabelRecord
+from tests import factories as fx
 
 
 @pytest.fixture(scope="module")
@@ -110,6 +116,42 @@ def test_no_references_is_fatal_downstream(config: Config) -> None:
     assert select_references(prelabels, None, held_out, config) == []
 
 
+# --- уменьшение масок -------------------------------------------------------
+
+
+def test_thin_stripes_survive_downscale() -> None:
+    """Полосы шириной в пиксель обязаны пережить уменьшение маски.
+
+    При усреднении такая полоса даёт значение около 25 и при пороге 127
+    пропадает — метка локализации теряется молча.
+    """
+    mask = np.zeros((2300, 1700), dtype=np.uint8)
+    for column in (200, 640, 1100, 1500):
+        mask[:, column : column + 1] = 255
+
+    small = downscale_mask(mask)
+
+    assert max(small.shape) == 256
+    assert small.max() == 255
+    assert (small > 127).any(axis=0).sum() >= 4  # все четыре полосы на месте
+
+
+def test_downscale_keeps_aspect_and_area() -> None:
+    mask = np.zeros((2000, 1000), dtype=np.uint8)
+    mask[500:1500, 250:750] = 255  # четверть площади
+
+    small = downscale_mask(mask)
+
+    assert small.shape[0] / small.shape[1] == pytest.approx(2.0, abs=0.05)
+    assert float((small > 127).mean()) == pytest.approx(0.25, abs=0.05)
+
+
+def test_small_mask_is_left_alone() -> None:
+    mask = np.zeros((120, 90), dtype=np.uint8)
+    mask[10:20, 10:20] = 255
+    assert np.array_equal(downscale_mask(mask), mask)
+
+
 # --- контроль частот --------------------------------------------------------
 
 
@@ -142,6 +184,44 @@ def test_rare_labels_reach_the_quota(config: Config) -> None:
     for label in DEGRADATIONS:
         share = counts[label] / total
         assert share >= quota * 0.9, f"{label}: {share:.1%} против квоты {quota:.0%}"
+
+
+def test_manifest_survives_a_bom(tmp_path) -> None:
+    """Инструменты Windows дописывают BOM, и парсер JSON падает невнятно."""
+    from src.data.generate import read_manifest
+    from src.schema import SyntheticRecord
+
+    record = SyntheticRecord(
+        image="images/a.jpg", reference="a.jpg", document="a", corpus="t", width=10, height=10
+    )
+    path = tmp_path / "manifest.jsonl"
+    path.write_text("﻿" + record.model_dump_json() + "\n", encoding="utf-8")
+
+    assert read_manifest(path)[0].image == "images/a.jpg"
+
+
+def test_recipe_reproduces_the_same_page(config: Config, tmp_path) -> None:
+    """Ради этого в записи хранится seed: рецепт восстанавливает страницу побитово.
+
+    Иначе синтетику пришлось бы возить в Colab гигабайтами вместо мегабайтов.
+    """
+    from src.data.degrade import apply as apply_degradations
+
+    page = fx.text_page(width=800, height=1000)
+    labels = ["blur", "shadow", "streaks"]
+    severities = dict.fromkeys(labels, 0.7)
+    seed = 12345
+
+    first, first_masks = apply_degradations(
+        page, labels, severities, config, np.random.default_rng(seed)
+    )
+    second, second_masks = apply_degradations(
+        page, labels, severities, config, np.random.default_rng(seed)
+    )
+
+    assert np.array_equal(first, second)
+    for label in ("shadow", "streaks"):
+        assert np.array_equal(first_masks[label], second_masks[label])
 
 
 def test_deficit_raises_probability(config: Config) -> None:

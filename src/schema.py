@@ -138,6 +138,10 @@ class SyntheticRecord(_Model):
 
     labels: dict[str, bool] = Field(default_factory=dict)
     severities: dict[str, float] = Field(default_factory=dict)
+    # Зерно генератора этой страницы. С ним запись — полный рецепт: по эталону,
+    # меткам, силам и зерну страница восстанавливается побитово. Поэтому в Colab
+    # везём эталоны и манифест (сотни мегабайт), а не готовые картинки (гигабайты).
+    seed: int = 0
     # Метка -> путь к маске области. Только для локальных дефектов: патч из
     # чистого угла не должен получить метку `glare` из-за блика в центре.
     masks: dict[str, str] = Field(default_factory=dict)

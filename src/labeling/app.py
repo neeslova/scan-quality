@@ -67,7 +67,7 @@ def load_done(path: Path) -> dict[str, LabelRecord]:
     done: dict[str, LabelRecord] = {}
     if not path.is_file():
         return done
-    with path.open("r", encoding="utf-8") as fh:
+    with path.open("r", encoding="utf-8-sig") as fh:
         for number, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
