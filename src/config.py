@@ -74,6 +74,10 @@ class CVConfig(_Section):
 
     ink_block_frac: float = Field(gt=0.0, lt=1.0)
     ink_offset: int = Field(ge=0, le=255)
+    ink_denoise_frac: float = Field(gt=0.0, lt=1.0)
+
+    crop_band_frac: float = Field(gt=0.0, lt=1.0)
+    crop_frame_span_frac: float = Field(gt=0.0, le=1.0)
 
     bitonal_mid_low: int = Field(ge=0, le=255)
     bitonal_mid_high: int = Field(ge=0, le=255)

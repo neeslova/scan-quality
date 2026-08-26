@@ -96,7 +96,20 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         block_frac=cfg.ink_block_frac,
         offset=cfg.ink_offset,
     )
-    margins = geometry.margin_fractions(gray, block_frac=cfg.ink_block_frac, offset=cfg.ink_offset)
+    margins = geometry.margin_fractions(
+        gray,
+        block_frac=cfg.ink_block_frac,
+        offset=cfg.ink_offset,
+        denoise_frac=cfg.ink_denoise_frac,
+    )
+    border = geometry.border_ink(
+        gray,
+        band_frac=cfg.crop_band_frac,
+        frame_span_frac=cfg.crop_frame_span_frac,
+        block_frac=cfg.ink_block_frac,
+        offset=cfg.ink_offset,
+        denoise_frac=cfg.ink_denoise_frac,
+    )
 
     tenengrad_mean = float(np.mean(tenengrad_values)) if tenengrad_values else 0.0
     gap = contrast.ink_paper_gap(gray)
@@ -132,7 +145,16 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         "margin_right": margins.right,
         "margin_top": margins.top,
         "margin_bottom": margins.bottom,
+        # Поля — справочная величина, а не признак обреза: скан, подрезанный ровно
+        # по листу, полей не имеет при полностью сохранном документе.
         "min_margin_frac": margins.minimum,
+        # Обрез: доля периметра, где штрихи рассечены границей кадра.
+        "border_ink_frac": border.coverage,
+        "border_ink_left": border.left,
+        "border_ink_right": border.right,
+        "border_ink_top": border.top,
+        "border_ink_bottom": border.bottom,
+        "has_scan_frame": float(border.has_frame),
         # масштаб текста
         "line_height_px": scale.line_height,
         # То же, но в пикселях исходного файла. Загрузчик мог уменьшить страницу

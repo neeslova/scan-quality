@@ -14,6 +14,13 @@ import numpy as np
 
 from src.imaging import DEFAULT_INK_BLOCK_FRAC, DEFAULT_INK_OFFSET, binarize_ink
 
+# Ядро открытия для подавления зерна бумаги, доля меньшей стороны страницы.
+DEFAULT_DENOISE_FRAC = 0.0015
+# Полоса вдоль края, в которой ищем рассечённые штрихи.
+DEFAULT_BAND_FRAC = 0.005
+# Компонента, растянутая вдоль стороны больше этой доли, — рамка, а не текст.
+DEFAULT_FRAME_SPAN_FRAC = 0.8
+
 
 @dataclass(frozen=True)
 class Margins:
@@ -24,8 +31,29 @@ class Margins:
 
     @property
     def minimum(self) -> float:
-        """Самое узкое поле — по нему судим об обрезе."""
         return min(self.left, self.right, self.top, self.bottom)
+
+
+@dataclass(frozen=True)
+class BorderInk:
+    """Сколько текста рассечено границей кадра."""
+
+    coverage: float  # доля периметра, занятая срезанными штрихами
+    left: float
+    right: float
+    top: float
+    bottom: float
+    has_frame: bool  # найдена сплошная рамка: край сканера, тень переплёта
+
+
+def _denoise(binary: np.ndarray, denoise_frac: float) -> np.ndarray:
+    """Убирает зерно бумаги. Ядро от размера страницы, а не фиксированные 3×3.
+
+    На фактурной архивной бумаге пятна и потемневшие края проходят порог локальной
+    бинаризации, и без масштабируемого открытия бокс текста растягивается на весь кадр.
+    """
+    size = max(3, int(min(binary.shape) * denoise_frac) | 1)
+    return cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((size, size), np.uint8))
 
 
 def rotate(gray: np.ndarray, angle_deg: float) -> np.ndarray:
@@ -94,15 +122,13 @@ def text_bbox(
     min_ink_frac: float = 0.005,
     block_frac: float = DEFAULT_INK_BLOCK_FRAC,
     offset: int = DEFAULT_INK_OFFSET,
+    denoise_frac: float = DEFAULT_DENOISE_FRAC,
 ) -> tuple[int, int, int, int]:
     """Прямоугольник текста: (x0, y0, x1, y1). Пустая страница -> вся страница."""
     if gray.size == 0:
         return (0, 0, 0, 0)
 
-    binary = binarize_ink(gray, block_frac, offset)
-    # Мелкий мусор (пыль, точки) не должен растягивать бокс до краёв.
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-
+    binary = _denoise(binarize_ink(gray, block_frac, offset), denoise_frac)
     height, width = binary.shape
     rows = binary.sum(axis=1, dtype=np.float64) / (255.0 * width)
     cols = binary.sum(axis=0, dtype=np.float64) / (255.0 * height)
@@ -119,16 +145,77 @@ def margin_fractions(
     min_ink_frac: float = 0.005,
     block_frac: float = DEFAULT_INK_BLOCK_FRAC,
     offset: int = DEFAULT_INK_OFFSET,
+    denoise_frac: float = DEFAULT_DENOISE_FRAC,
 ) -> Margins:
-    """Поля вокруг текста в долях соответствующей стороны страницы."""
+    """Поля вокруг текста в долях соответствующей стороны страницы.
+
+    Внимание: это НЕ признак обреза. Поля зависят от того, как обрезали скан, а не
+    от того, потерян ли текст: архивный скан, подрезанный ровно по листу, даёт
+    нулевые поля при полностью сохранном документе. Для обреза см. `border_ink`.
+    """
     if gray.size == 0:
         return Margins(0.0, 0.0, 0.0, 0.0)
 
     height, width = gray.shape
-    x0, y0, x1, y1 = text_bbox(gray, min_ink_frac, block_frac, offset)
+    x0, y0, x1, y1 = text_bbox(gray, min_ink_frac, block_frac, offset, denoise_frac)
     return Margins(
         left=x0 / width,
         right=(width - x1) / width,
         top=y0 / height,
         bottom=(height - y1) / height,
+    )
+
+
+def border_ink(
+    gray: np.ndarray,
+    band_frac: float = DEFAULT_BAND_FRAC,
+    frame_span_frac: float = DEFAULT_FRAME_SPAN_FRAC,
+    block_frac: float = DEFAULT_INK_BLOCK_FRAC,
+    offset: int = DEFAULT_INK_OFFSET,
+    denoise_frac: float = DEFAULT_DENOISE_FRAC,
+) -> BorderInk:
+    """Доля периметра, где штрихи рассечены границей кадра.
+
+    Это и есть признак обреза. «Нет полей» им не является: скан, подрезанный ровно
+    по листу, полей не имеет, но документ на нём сохранён целиком. Обрез виден иначе —
+    строки текста упираются в границу и обрываются на ней.
+
+    Сплошные компоненты, растянутые почти на всю сторону, из подсчёта исключаются:
+    это край сканера, тень переплёта или чёрная рамка — свой дефект, но не обрез.
+    Настоящий срезанный текст даёт прерывистое покрытие: штрихи с промежутками.
+    """
+    if gray.size == 0:
+        return BorderInk(0.0, 0.0, 0.0, 0.0, 0.0, False)
+
+    binary = _denoise(binarize_ink(gray, block_frac, offset), denoise_frac)
+    height, width = binary.shape
+    band = max(1, int(min(height, width) * band_frac))
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if count <= 1:
+        return BorderInk(0.0, 0.0, 0.0, 0.0, 0.0, False)
+
+    spans_width = stats[:, cv2.CC_STAT_WIDTH] >= frame_span_frac * width
+    spans_height = stats[:, cv2.CC_STAT_HEIGHT] >= frame_span_frac * height
+    is_frame = spans_width | spans_height
+    is_frame[0] = True  # фон
+
+    frame_lookup = is_frame[labels]
+    text = (labels > 0) & ~frame_lookup
+
+    edges = {
+        "top": text[:band, :].any(axis=0),
+        "bottom": text[-band:, :].any(axis=0),
+        "left": text[:, :band].any(axis=1),
+        "right": text[:, -band:].any(axis=1),
+    }
+    coverage = {name: float(mask.mean()) for name, mask in edges.items()}
+
+    return BorderInk(
+        coverage=max(coverage.values()),
+        left=coverage["left"],
+        right=coverage["right"],
+        top=coverage["top"],
+        bottom=coverage["bottom"],
+        has_frame=bool(is_frame[1:].any()),
     )

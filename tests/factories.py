@@ -92,6 +92,39 @@ def with_streaks(page: np.ndarray, count: int = 6, depth: int = 35, seed: int = 
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def with_foxing(
+    page: np.ndarray,
+    band_frac: float = 0.05,
+    count: int = 60,
+    depth: int = 60,
+    seed: int = 4,
+) -> np.ndarray:
+    """Пятна на полях, как у старой бумаги: границы кадра не касаются.
+
+    Ровно этот случай ломал метрику «минимальное поле»: пятна проходят порог
+    бинаризации, бокс текста растягивается на весь кадр, и сохранный документ
+    объявляется обрезанным.
+    """
+    rng = np.random.default_rng(seed)
+    out = page.copy()
+    height, width = page.shape
+    margin_y = int(height * band_frac)
+    margin_x = int(width * band_frac)
+
+    for _ in range(count):
+        if rng.random() < 0.5:
+            y = int(rng.integers(margin_y // 3, margin_y))
+            y = y if rng.random() < 0.5 else height - y
+            x = int(rng.integers(margin_x // 3, width - margin_x // 3))
+        else:
+            x = int(rng.integers(margin_x // 3, margin_x))
+            x = x if rng.random() < 0.5 else width - x
+            y = int(rng.integers(margin_y // 3, height - margin_y // 3))
+        radius = int(rng.integers(4, 10))
+        cv2.circle(out, (x, y), radius, int(max(0, int(page.max()) - depth)), -1)
+    return out
+
+
 def rotated(page: np.ndarray, angle_deg: float) -> np.ndarray:
     height, width = page.shape
     matrix = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), angle_deg, 1.0)

@@ -121,6 +121,47 @@ def test_cropped_page_loses_margin(page: np.ndarray) -> None:
     assert cut.minimum < full.minimum
 
 
+# --- обрез: штрихи рассечены границей ---------------------------------------
+
+
+def test_border_ink_zero_on_clean_page(page: np.ndarray) -> None:
+    assert geometry.border_ink(page).coverage < 0.01
+
+
+def test_border_ink_detects_severed_text(page: np.ndarray) -> None:
+    """Срез через текст: строки упираются в границу и обрываются на ней."""
+    cut = geometry.border_ink(fx.cropped(page, cut_frac=0.12))
+    assert cut.left > 0.2
+    assert cut.coverage == pytest.approx(cut.left)
+
+
+def test_foxed_page_is_not_cropped(page: np.ndarray) -> None:
+    """Ключевая проверка: пятна на полях — не обрез.
+
+    Старая метрика «минимальное поле» на них разваливалась: пятна раздували бокс
+    текста до краёв кадра, и сохранный документ получал cropped = 1.00. Именно так
+    вёл себя весь Yenisei. Новая метрика смотрит на границу кадра, а не на бокс.
+    """
+    foxed = fx.with_foxing(page)
+
+    assert geometry.margin_fractions(foxed).minimum < geometry.margin_fractions(page).minimum
+    assert geometry.border_ink(foxed).coverage < 0.1
+
+
+def test_scanner_frame_is_not_counted_as_crop(page: np.ndarray) -> None:
+    """Чёрная рамка сканера по краю — свой дефект, но не обрез."""
+    framed = page.copy()
+    band = 12
+    framed[:band, :] = 0
+    framed[-band:, :] = 0
+    framed[:, :band] = 0
+    framed[:, -band:] = 0
+
+    stats = geometry.border_ink(framed)
+    assert stats.has_frame
+    assert stats.coverage < 0.2
+
+
 # --- масштаб текста ---------------------------------------------------------
 
 
