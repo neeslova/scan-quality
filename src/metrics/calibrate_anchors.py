@@ -150,6 +150,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Подбор якорей CV-метрик по корпусу")
     parser.add_argument("--data", type=Path, required=True, help="папка со сканами")
     parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument(
+        "--corpus", type=Path, action="append", default=None, help="оверлей конфига под корпус"
+    )
     parser.add_argument("--limit", type=int, default=250, help="размер случайной выборки")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--good-pct", type=float, default=DEFAULT_GOOD_PCT)
@@ -158,7 +161,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
-    config = load_config(args.config)
+    config = load_config(args.config, args.corpus)
 
     files = [p for p in sorted(args.data.rglob("*")) if p.suffix.lower() in IMAGE_SUFFIXES]
     if not files:

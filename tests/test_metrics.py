@@ -171,6 +171,24 @@ def test_line_height_matches_generator(page: np.ndarray) -> None:
     assert scale.n_lines > 20
 
 
+def test_dark_scan_border_does_not_swallow_the_page(page: np.ndarray) -> None:
+    """Тёмный край скана не должен превращать страницу в одну строку.
+
+    Полоса вдоль края даёт чернила в каждой строке горизонтального профиля,
+    порог «в строке есть текст» превышается везде, и высота строки становится
+    равной высоте листа. На архивном корпусе так ломалось около 40% страниц.
+    """
+    framed = page.copy()
+    band = max(3, page.shape[1] // 40)
+    framed[:, :band] = 0
+    framed[:, -band:] = 0
+
+    scale = text_scale.estimate_text_scale(framed)
+    assert scale.line_height == pytest.approx(24.0, abs=4.0)
+    assert scale.line_height < page.shape[0] * 0.25
+    assert scale.n_lines > 20
+
+
 def test_downscale_reduces_line_height(page: np.ndarray) -> None:
     small = fx.text_page(width=480, height=640, line_height=10, line_gap=7, margin=36)
     assert text_scale.estimate_text_scale(small).line_height < 14.0

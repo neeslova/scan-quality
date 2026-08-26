@@ -109,7 +109,7 @@ def test_low_resolution_detected(config: Config, tmp_path) -> None:
     report = analyze(path, config)
     assert (report.width, report.height) == (620, 800)  # не растянут
     assert report.cv_metrics["dpi"] == pytest.approx(150.0, rel=1e-3)
-    assert report.cv_metrics["source_line_height_px"] < 16
+    assert report.cv_metrics["line_height_px"] < 16
     # Порог, а не конкретное число: якоря пересчитываются под корпус,
     # а требование — чтобы метка поднялась выше tau_low и попала в вердикт.
     assert report.scores()["low_resolution"] > config.verdict.tau_low

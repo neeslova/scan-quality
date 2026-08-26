@@ -81,6 +81,29 @@ def mid_tone_fraction(gray: np.ndarray, low: int = 40, high: int = 215) -> float
     return float(((gray > low) & (gray < high)).mean())
 
 
+def frame_component_mask(binary: np.ndarray, frame_span_frac: float = 0.8) -> np.ndarray:
+    """Маска компонент, растянутых почти на всю сторону: рамка сканера, край листа.
+
+    Такая компонента — не текст, и оставлять её в анализе нельзя. Тёмная полоса
+    вдоль края даёт чернила в каждой строке горизонтального профиля: порог «в строке
+    есть текст» превышается везде, страница схлопывается в один сплошной участок,
+    и оценка высоты строки возвращает высоту всего листа.
+    """
+    if binary.size == 0:
+        return np.zeros_like(binary, dtype=bool)
+
+    height, width = binary.shape
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if count <= 1:
+        return np.zeros(binary.shape, dtype=bool)
+
+    spans = (stats[:, cv2.CC_STAT_WIDTH] >= frame_span_frac * width) | (
+        stats[:, cv2.CC_STAT_HEIGHT] >= frame_span_frac * height
+    )
+    spans[0] = False  # фон
+    return spans[labels]
+
+
 def local_std(gray: np.ndarray, window: int) -> np.ndarray:
     """σ в скользящем окне через E[x²] - E[x]²."""
     values = gray.astype(np.float64)

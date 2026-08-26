@@ -8,11 +8,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import cv2
 import numpy as np
 
-from src.imaging import DEFAULT_INK_BLOCK_FRAC, DEFAULT_INK_OFFSET, binarize_ink
+from src.imaging import (
+    DEFAULT_INK_BLOCK_FRAC,
+    DEFAULT_INK_OFFSET,
+    binarize_ink,
+    frame_component_mask,
+)
 
 # Ядро открытия для подавления зерна бумаги, доля меньшей стороны страницы.
 DEFAULT_DENOISE_FRAC = 0.0015
@@ -46,7 +52,7 @@ class BorderInk:
     has_frame: bool  # найдена сплошная рамка: край сканера, тень переплёта
 
 
-def _denoise(binary: np.ndarray, denoise_frac: float) -> np.ndarray:
+def denoise_ink(binary: np.ndarray, denoise_frac: float) -> np.ndarray:
     """Убирает зерно бумаги. Ядро от размера страницы, а не фиксированные 3×3.
 
     На фактурной архивной бумаге пятна и потемневшие края проходят порог локальной
@@ -123,12 +129,19 @@ def text_bbox(
     block_frac: float = DEFAULT_INK_BLOCK_FRAC,
     offset: int = DEFAULT_INK_OFFSET,
     denoise_frac: float = DEFAULT_DENOISE_FRAC,
+    binary: Optional[np.ndarray] = None,
 ) -> tuple[int, int, int, int]:
-    """Прямоугольник текста: (x0, y0, x1, y1). Пустая страница -> вся страница."""
+    """Прямоугольник текста: (x0, y0, x1, y1). Пустая страница -> вся страница.
+
+    `binary` — уже посчитанная и очищенная маска чернил. Бинаризация всей страницы
+    стоит около 200 мс, и на неё приходилось четверть времени обработки: её считали
+    заново здесь, в оценке высоты строки и в поиске обреза.
+    """
     if gray.size == 0:
         return (0, 0, 0, 0)
 
-    binary = _denoise(binarize_ink(gray, block_frac, offset), denoise_frac)
+    if binary is None:
+        binary = denoise_ink(binarize_ink(gray, block_frac, offset), denoise_frac)
     height, width = binary.shape
     rows = binary.sum(axis=1, dtype=np.float64) / (255.0 * width)
     cols = binary.sum(axis=0, dtype=np.float64) / (255.0 * height)
@@ -146,6 +159,7 @@ def margin_fractions(
     block_frac: float = DEFAULT_INK_BLOCK_FRAC,
     offset: int = DEFAULT_INK_OFFSET,
     denoise_frac: float = DEFAULT_DENOISE_FRAC,
+    binary: Optional[np.ndarray] = None,
 ) -> Margins:
     """Поля вокруг текста в долях соответствующей стороны страницы.
 
@@ -157,7 +171,7 @@ def margin_fractions(
         return Margins(0.0, 0.0, 0.0, 0.0)
 
     height, width = gray.shape
-    x0, y0, x1, y1 = text_bbox(gray, min_ink_frac, block_frac, offset, denoise_frac)
+    x0, y0, x1, y1 = text_bbox(gray, min_ink_frac, block_frac, offset, denoise_frac, binary)
     return Margins(
         left=x0 / width,
         right=(width - x1) / width,
@@ -173,6 +187,7 @@ def border_ink(
     block_frac: float = DEFAULT_INK_BLOCK_FRAC,
     offset: int = DEFAULT_INK_OFFSET,
     denoise_frac: float = DEFAULT_DENOISE_FRAC,
+    binary: Optional[np.ndarray] = None,
 ) -> BorderInk:
     """Доля периметра, где штрихи рассечены границей кадра.
 
@@ -187,21 +202,13 @@ def border_ink(
     if gray.size == 0:
         return BorderInk(0.0, 0.0, 0.0, 0.0, 0.0, False)
 
-    binary = _denoise(binarize_ink(gray, block_frac, offset), denoise_frac)
+    if binary is None:
+        binary = denoise_ink(binarize_ink(gray, block_frac, offset), denoise_frac)
     height, width = binary.shape
     band = max(1, int(min(height, width) * band_frac))
 
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    if count <= 1:
-        return BorderInk(0.0, 0.0, 0.0, 0.0, 0.0, False)
-
-    spans_width = stats[:, cv2.CC_STAT_WIDTH] >= frame_span_frac * width
-    spans_height = stats[:, cv2.CC_STAT_HEIGHT] >= frame_span_frac * height
-    is_frame = spans_width | spans_height
-    is_frame[0] = True  # фон
-
-    frame_lookup = is_frame[labels]
-    text = (labels > 0) & ~frame_lookup
+    frame = frame_component_mask(binary, frame_span_frac)
+    text = (binary > 0) & ~frame
 
     edges = {
         "top": text[:band, :].any(axis=0),
@@ -217,5 +224,5 @@ def border_ink(
         right=coverage["right"],
         top=coverage["top"],
         bottom=coverage["bottom"],
-        has_frame=bool(is_frame[1:].any()),
+        has_frame=bool(frame.any()),
     )

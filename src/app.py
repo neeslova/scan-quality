@@ -117,6 +117,13 @@ def build_demo(config: Config):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gradio-приложение оценки качества сканов")
     parser.add_argument("--config", type=Path, default=None, help="путь к yaml-конфигу")
+    parser.add_argument(
+        "--corpus",
+        type=Path,
+        action="append",
+        default=None,
+        help="оверлей конфига под корпус, напр. configs/corpora/yenisei.yaml",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="публичная ссылка Gradio")
@@ -132,7 +139,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    config = load_config(args.config)
+    config = load_config(args.config, args.corpus)
 
     if args.image is not None:
         print(analyze(args.image, config).to_json())

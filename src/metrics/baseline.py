@@ -13,7 +13,7 @@ from typing import Optional
 import numpy as np
 
 from src.config import Config
-from src.imaging import mid_tone_fraction
+from src.imaging import binarize_ink, mid_tone_fraction
 from src.io.loader import LoadedPage
 from src.io.patches import grid, select_informative
 from src.metrics import blur, contrast, geometry, glare, noise, shadow, streaks, text_scale
@@ -76,6 +76,13 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
     )
     deskewed = geometry.rotate(gray, skew_deg) if abs(skew_deg) >= cfg.skew_coarse_step else gray
 
+    # Бинаризация страницы стоит около 200 мс на крупном скане, а нужна четырём
+    # метрикам сразу — считаем один раз. Для выровненной копии её приходится
+    # пересчитывать: поворот меняет пиксели.
+    page_ink = binarize_ink(gray, cfg.ink_block_frac, cfg.ink_offset)
+    page_clean = geometry.denoise_ink(page_ink, cfg.ink_denoise_frac)
+    deskewed_ink = page_ink if deskewed is gray else None
+
     glare_stats = glare.glare_stats(
         gray,
         threshold=cfg.glare_threshold,
@@ -95,12 +102,17 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         min_row_ink_frac=cfg.line_min_row_ink_frac,
         block_frac=cfg.ink_block_frac,
         offset=cfg.ink_offset,
+        binary=deskewed_ink,
+        max_line_height_frac=cfg.line_max_height_frac,
+        frame_span_frac=cfg.crop_frame_span_frac,
+        smooth_frac=cfg.line_profile_smooth_frac,
     )
     margins = geometry.margin_fractions(
         gray,
         block_frac=cfg.ink_block_frac,
         offset=cfg.ink_offset,
         denoise_frac=cfg.ink_denoise_frac,
+        binary=page_clean,
     )
     border = geometry.border_ink(
         gray,
@@ -109,6 +121,7 @@ def compute_raw_metrics(page: LoadedPage, config: Config) -> dict[str, float]:
         block_frac=cfg.ink_block_frac,
         offset=cfg.ink_offset,
         denoise_frac=cfg.ink_denoise_frac,
+        binary=page_clean,
     )
 
     tenengrad_mean = float(np.mean(tenengrad_values)) if tenengrad_values else 0.0
@@ -181,10 +194,17 @@ def inapplicable_labels(raw: Mapping[str, float], config: Config) -> set[str]:
     максимален, а шум обнулён самой бинаризацией. Формально метрики посчитаются и
     выдадут уверенный ноль — но это ноль от отсутствия шкалы, а не от отсутствия
     дефекта. Такую метку честнее не выдавать вовсе.
+
+    То же с высотой строки: если строк не нашлось (пустая страница, разреженная
+    рукопись), нулевая высота означала бы «текст нечитаемо мелкий», то есть
+    максимальный дефект, — хотя на деле измерить просто не удалось.
     """
+    skip: set[str] = set()
     if raw.get("mid_tone_frac", 1.0) < config.cv.bitonal_max_mid_frac:
-        return {"low_contrast", "noise"}
-    return set()
+        skip |= {"low_contrast", "noise"}
+    if raw.get("n_lines", 0.0) <= 0.0:
+        skip.add("low_resolution")
+    return skip
 
 
 def scores_from_metrics(

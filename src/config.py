@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -93,6 +94,8 @@ class CVConfig(_Section):
 
     min_ink_frac: float = Field(ge=0.0, lt=1.0)
     line_min_row_ink_frac: float = Field(ge=0.0, lt=1.0)
+    line_max_height_frac: float = Field(gt=0.0, le=1.0)
+    line_profile_smooth_frac: float = Field(ge=0.0, lt=1.0)
     streak_smooth_frac: float = Field(gt=0.0, lt=1.0)
 
     scores: dict[str, ScoreMapping]
@@ -208,17 +211,56 @@ def resolve_path(path: Path, root: Optional[Path] = None) -> Path:
     return (root or PROJECT_ROOT) / path
 
 
-def load_config(path: Union[str, Path, None] = None) -> Config:
-    """Читает YAML и валидирует его. Без аргумента — configs/base.yaml."""
-    cfg_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
-    if not cfg_path.is_file():
-        raise FileNotFoundError(f"Конфиг не найден: {cfg_path}")
+def deep_merge(base: dict, overlay: Mapping) -> dict:
+    """Рекурсивно накладывает overlay на base. Словари сливаются, остальное заменяется.
 
-    with cfg_path.open("r", encoding="utf-8") as fh:
+    Список заменяется целиком, а не дополняется: иначе оверлей не смог бы,
+    например, сократить набор меток — только расширить.
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        current = result.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            result[key] = deep_merge(current, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _read_yaml(path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"Конфиг не найден: {path}")
+    with path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
-
     if not isinstance(raw, dict):
-        raise ValueError(f"Ожидался словарь на верхнем уровне {cfg_path}, получено {type(raw)}")
+        raise ValueError(f"Ожидался словарь на верхнем уровне {path}, получено {type(raw)}")
+    return raw
+
+
+def load_config(
+    path: Union[str, Path, None] = None,
+    overlays: Union[str, Path, Sequence[Union[str, Path]], None] = None,
+) -> Config:
+    """Читает YAML и валидирует его. Без аргумента — configs/base.yaml.
+
+    `overlays` — конфиги корпуса, накладываются поверх базового по порядку. Нужны
+    потому, что якоря CV-метрик не универсальны: значение, которое на офисных сканах
+    означает дефект, на архивных может быть нормой (см. журнал решений, №22).
+    Оверлей задаёт только то, что отличается, — обычно блок `cv.scores`.
+    """
+    cfg_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    raw = _read_yaml(cfg_path)
+
+    if overlays is None:
+        paths: list[Path] = []
+    elif isinstance(overlays, (str, Path)):
+        paths = [Path(overlays)]
+    else:
+        paths = [Path(p) for p in overlays]
+
+    for overlay_path in paths:
+        raw = deep_merge(raw, _read_yaml(overlay_path))
+        logger.debug("Наложен оверлей: %s", overlay_path)
 
     config = Config.model_validate(raw)
     logger.debug("Конфиг загружен: %s (%d меток)", cfg_path, config.n_labels)
