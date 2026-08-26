@@ -249,14 +249,14 @@ from google.colab import drive; drive.mount('/content/drive')
 
 ## 9. Спринты
 
-### С0 — каркас `[~]`
-- [x] `pyproject.toml`, `requirements.txt`, `.gitignore` — [ ] venv, `pip install -e .`
+### С0 — каркас `[x]`
+- [x] `pyproject.toml`, `requirements.txt`, `.gitignore`, venv `.venv`, `pip install -e ".[dev]"`
 - [x] структура папок, `configs/base.yaml`, `src/config.py`, `src/schema.py`
 - [x] заглушка `src/app.py` + `src/pipeline.py`: картинка → фиктивный `QualityReport` в JSON
 - [x] `notebooks/train.ipynb` по шаблону выше
-- [x] ruff + black в `pyproject.toml`, `tests/test_smoke.py` (10 проверок, без numpy/torch)
-- **DoD:** `python -m src.app` открывает Gradio, картинка загружается, JSON выводится
-  — ожидает установки зависимостей
+- [x] ruff + black в `pyproject.toml`, `tests/test_smoke.py` (13 проверок)
+- **DoD выполнен:** `python -m src.app` поднимает Gradio (`GET /` → 200), `--image` печатает
+  JSON, 13 тестов зелёные, ruff/black чисто
 
 ### С1 — CV-метрики (baseline) `[ ]`
 - [ ] `src/metrics/*` — все модули из раздела 5
@@ -360,6 +360,8 @@ from google.colab import drive; drive.mount('/content/drive')
 | 8 | Асимметричные пороги, recall > precision | Пропустить плохой скан дороже, чем отклонить хороший |
 | 9 | Целевой Python 3.9, а не 3.10+ | Локально стоит 3.9.13; ставить второй интерпретатор ради `X \| Y` не окупается |
 | 10 | Конфиг с `extra="forbid"`, валидация покрытия меток в `aggregation` | Опечатка в yaml должна падать при старте, а не тихо менять поведение обучения |
+| 11 | Пины `pydantic<2.10` и `huggingface-hub<1.0` | Gradio 5 требует Python 3.10+, значит сидим на 4.44.1; она несовместима с pydantic 2.10+ (падает генерация API-схемы) и с hub 1.0 (удалён `HfFolder`). Снимать пины — только вместе с переездом на Python 3.10+ |
+| 12 | `GRADIO_ANALYTICS_ENABLED=False` при старте приложения | Gradio при импорте ходит в api.gradio.app, а система обязана работать без сети |
 
 ## 14. Открытые вопросы
 

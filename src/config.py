@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -37,9 +37,9 @@ class GridConfig(_Section):
 class AggregationConfig(_Section):
     """Правило схлопывания предсказаний по патчам: локальные — max, глобальные — mean."""
 
-    local: List[str]
+    local: list[str]
     # `global` — ключевое слово Python, поэтому поле с алиасом.
-    global_: List[str] = Field(alias="global", serialization_alias="global")
+    global_: list[str] = Field(alias="global", serialization_alias="global")
 
 
 class DataConfig(_Section):
@@ -62,10 +62,10 @@ class TrainConfig(_Section):
     optimizer: str
     scheduler: str
     seed: int
-    pos_weight: Union[str, List[float]] = "auto"
+    pos_weight: Union[str, list[float]] = "auto"
 
     @model_validator(mode="after")
-    def _check_pos_weight(self) -> "TrainConfig":
+    def _check_pos_weight(self) -> TrainConfig:
         if isinstance(self.pos_weight, str) and self.pos_weight != "auto":
             raise ValueError("train.pos_weight: допустимо 'auto' или список чисел")
         return self
@@ -86,7 +86,7 @@ class VerdictConfig(_Section):
     tau_unreadable: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def _check_order(self) -> "VerdictConfig":
+    def _check_order(self) -> VerdictConfig:
         if self.tau_low >= self.tau_high:
             raise ValueError(
                 f"verdict: требуется tau_low < tau_high, получено "
@@ -96,7 +96,7 @@ class VerdictConfig(_Section):
 
 
 class Config(_Section):
-    labels: List[str]
+    labels: list[str]
     paths: PathsConfig
     data: DataConfig
     model: ModelConfig
@@ -104,7 +104,7 @@ class Config(_Section):
     verdict: VerdictConfig
 
     @model_validator(mode="after")
-    def _check_labels(self) -> "Config":
+    def _check_labels(self) -> Config:
         if len(set(self.labels)) != len(self.labels):
             raise ValueError("labels: есть дубликаты")
 

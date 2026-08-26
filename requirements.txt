@@ -8,7 +8,10 @@ pillow>=10.0
 pymupdf>=1.23
 scipy>=1.10
 pyyaml>=6.0
-pydantic>=2.0
+# gradio 4.x падает на pydantic >= 2.10 при генерации API-схемы
+pydantic>=2.7,<2.10
 pandas>=2.0
 gradio>=4.0
+# gradio 4.x импортирует HfFolder, удалённый в huggingface_hub 1.0
+huggingface-hub>=0.25,<1.0
 onnxruntime>=1.16

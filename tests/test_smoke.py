@@ -90,3 +90,17 @@ def test_analyze_is_deterministic(config: Config, tmp_path) -> None:
 def test_analyze_missing_file(config: Config, tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         analyze(tmp_path / "nope.jpg", config)
+
+
+def test_app_handler(config: Config, tmp_path) -> None:
+    """Хендлер Gradio отдаёт пару (вердикт, JSON-словарь) и не требует самой Gradio."""
+    from src.app import _run
+
+    verdict, payload = _run(None, config)
+    assert payload == {}
+
+    image = tmp_path / "scan_003.jpg"
+    image.write_bytes(b"handler-check")
+    verdict, payload = _run(str(image), config)
+    assert payload["verdict"] in verdict or payload["verdict"] in {"good", "acceptable", "bad"}
+    assert len(payload["defects"]) == config.n_labels

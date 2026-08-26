@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from src.config import Config, load_config
 from src.pipeline import analyze
@@ -25,9 +26,14 @@ VERDICT_LABELS = {
 
 
 def _import_gradio():
+    # Gradio при импорте стучится в api.gradio.app. Система обязана работать без сети —
+    # выключаем телеметрию до импорта, иначе старт зависит от интернета.
+    os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
     try:
         import gradio as gr
-    except ImportError as exc:  # pragma: no cover — зависит от окружения
+    except ModuleNotFoundError as exc:  # pragma: no cover — зависит от окружения
+        if exc.name != "gradio":
+            raise
         raise SystemExit(
             "Gradio не установлен. Поставь зависимости:\n"
             '  py -m pip install -U pip setuptools\n  py -m pip install -e ".[dev]"'
@@ -35,7 +41,7 @@ def _import_gradio():
     return gr
 
 
-def _run(image_path: Optional[str], config: Config) -> Tuple[str, dict]:
+def _run(image_path: Optional[str], config: Config) -> tuple[str, dict]:
     """Хендлер кнопки: путь к файлу -> (человекочитаемый вердикт, JSON-отчёт)."""
     if not image_path:
         return "Загрузите изображение", {}
@@ -76,6 +82,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="публичная ссылка Gradio")
     parser.add_argument(
+        "--no-browser", action="store_true", help="не открывать браузер (проверки, CI)"
+    )
+    parser.add_argument(
         "--image",
         type=Path,
         default=None,
@@ -97,7 +106,7 @@ def main() -> None:
         server_name=args.host,
         server_port=args.port,
         share=args.share,
-        inbrowser=True,
+        inbrowser=not args.no_browser,
     )
 
 

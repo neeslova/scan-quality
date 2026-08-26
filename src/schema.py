@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,7 +27,7 @@ class DefectScore(_Model):
     score: float = Field(ge=0.0, le=1.0)
     source: ScoreSource = "cnn"
     # Для локальных дефектов — индексы патчей, где сработало сильнее всего.
-    top_patches: List[int] = Field(default_factory=list)
+    top_patches: list[int] = Field(default_factory=list)
 
 
 class OCRResult(_Model):
@@ -50,16 +50,16 @@ class QualityReport(_Model):
 
     verdict: Verdict
     quality_score: float = Field(ge=0.0, le=1.0)
-    defects: List[DefectScore] = Field(default_factory=list)
+    defects: list[DefectScore] = Field(default_factory=list)
 
-    cv_metrics: Dict[str, float] = Field(default_factory=dict)
+    cv_metrics: dict[str, float] = Field(default_factory=dict)
     ocr: Optional[OCRResult] = None
 
     heatmap_path: Optional[str] = None
     explanation: Optional[str] = None
     elapsed_ms: float = Field(default=0.0, ge=0.0)
 
-    def scores(self) -> Dict[str, float]:
+    def scores(self) -> dict[str, float]:
         """Плоский вид {метка: вероятность} — удобно для правил и таблиц."""
         return {d.label: d.score for d in self.defects}
 

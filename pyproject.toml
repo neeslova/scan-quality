@@ -19,9 +19,14 @@ dependencies = [
     "pymupdf>=1.23",
     "scipy>=1.10",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
+    # gradio 4.x падает на pydantic >= 2.10 при генерации API-схемы
+    # (TypeError: argument of type 'bool' is not iterable). Gradio 5 требует Python >= 3.10.
+    "pydantic>=2.7,<2.10",
     "pandas>=2.0",
     "gradio>=4.0",
+    # gradio 4.x (последняя ветка под Python 3.9) импортирует HfFolder,
+    # удалённый в huggingface_hub 1.0 — без пина приложение не стартует.
+    "huggingface-hub>=0.25,<1.0",
     "onnxruntime>=1.16",
 ]
 
@@ -63,6 +68,11 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "C4"]
 ignore = ["B008"]
+
+[tool.ruff.lint.pyupgrade]
+# pydantic вычисляет аннотации в рантайме, а `X | Y` (PEP 604) появился только в 3.10.
+# Дженерики-builtins (`list[str]`) на 3.9 уже работают, а Optional/Union оставляем как есть.
+keep-runtime-typing = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

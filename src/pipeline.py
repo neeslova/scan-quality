@@ -12,8 +12,9 @@ import hashlib
 import logging
 import random
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Optional, Union
 
 from src.config import Config, VerdictConfig, load_config
 from src.schema import DefectScore, QualityReport, Verdict
@@ -43,7 +44,7 @@ def quality_score(scores: Mapping[str, float]) -> float:
     return round(1.0 - max(scores.values()), 4)
 
 
-def _image_size(path: Path) -> Tuple[int, int]:
+def _image_size(path: Path) -> tuple[int, int]:
     """Размер картинки; без Pillow (голое окружение) возвращаем нули, а не падаем."""
     try:
         from PIL import Image
@@ -59,7 +60,7 @@ def _image_size(path: Path) -> Tuple[int, int]:
         return (0, 0)
 
 
-def _stub_scores(labels: Sequence[str], path: Path) -> Dict[str, float]:
+def _stub_scores(labels: Sequence[str], path: Path) -> dict[str, float]:
     """Псевдослучайные, но стабильные для файла вероятности.
 
     Seed — от содержимого файла: один и тот же скан всегда даёт один и тот же отчёт,
