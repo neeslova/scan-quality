@@ -138,9 +138,6 @@ class PatchDataset:
         self._seed = seed
         self._cache: dict[Path, np.ndarray] = {}
 
-    def __len__(self) -> int:
-        return len(self.samples) * self.per_page
-
     def _rng(self, index: int) -> np.random.Generator:
         # Детерминированность важна для валидации: одни и те же патчи каждую эпоху,
         # иначе кривая val дрожит от смены патчей, а не от обучения.
@@ -207,27 +204,49 @@ class PatchDataset:
         out = (crop.astype(np.float32) - mean) * contrast + mean + brightness
         return np.clip(out, 0, 255)
 
+    def __len__(self) -> int:
+        return len(self.samples)
+
     def __getitem__(self, index: int):
+        """Все патчи одной страницы за один раз: (N, 3, H, W) и (N, меток).
+
+        Именно все сразу, а не по одному. Чтобы взять патч, надо декодировать
+        страницу целиком — многомегапиксельный JPEG, — и при выдаче по одному
+        патчу одна и та же страница декодировалась `patches_per_page` раз за
+        эпоху. На двух ядрах Colab это упирало эпоху в 16 минут при простаивающем
+        GPU. Один декод на страницу вместо четырёх.
+        """
         import torch
 
         sample = self.samples[index % len(self.samples)]
-        rng = self._rng(index)
         gray = self._read(sample.path)
 
-        box = self._pick_box(gray, rng)
-        crop = gray[box[1] : box[3], box[0] : box[2]]
-        target = self._patch_labels(sample, box, gray.shape)
+        patches = []
+        targets = []
+        for step in range(self.per_page):
+            rng = self._rng(index * self.per_page + step)
+            box = self._pick_box(gray, rng)
+            crop = gray[box[1] : box[3], box[0] : box[2]]
+            targets.append(self._patch_labels(sample, box, gray.shape))
 
-        if crop.shape[0] != self.patch or crop.shape[1] != self.patch:
-            crop = cv2.resize(crop, (self.patch, self.patch), interpolation=cv2.INTER_AREA)
+            if crop.shape[0] != self.patch or crop.shape[1] != self.patch:
+                crop = cv2.resize(crop, (self.patch, self.patch), interpolation=cv2.INTER_AREA)
 
-        values = self._augment(crop, rng) if self.train else crop.astype(np.float32)
-        values = values / 255.0
-        values = (values - IMAGENET_MEAN) / IMAGENET_STD
+            values = self._augment(crop, rng) if self.train else crop.astype(np.float32)
+            values = (values / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+            patches.append(values)
 
         # Backbone ждёт три канала; серую страницу повторяем, а не красим.
-        tensor = torch.from_numpy(values).unsqueeze(0).repeat(3, 1, 1)
-        return tensor, torch.from_numpy(target)
+        stack = torch.from_numpy(np.stack(patches)).unsqueeze(1).repeat(1, 3, 1, 1)
+        return stack, torch.from_numpy(np.stack(targets))
+
+
+def flatten_patches(batch, target):
+    """(страниц, патчей, 3, H, W) -> (страниц*патчей, 3, H, W).
+
+    DataLoader собирает батч из страниц, а модель принимает патчи — распрямляем.
+    """
+    return batch.flatten(0, 1), target.flatten(0, 1)
 
 
 def positive_weights(samples: Sequence[Sample], labels: Sequence[str]) -> np.ndarray:

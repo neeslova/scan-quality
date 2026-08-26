@@ -230,6 +230,7 @@ class TrainConfig(_Section):
     scheduler: str
     seed: int
     pos_weight: Union[str, list[float]] = "auto"
+    pos_weight_max: float = Field(gt=0.0)
 
     @model_validator(mode="after")
     def _check_pos_weight(self) -> TrainConfig:

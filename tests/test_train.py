@@ -52,6 +52,47 @@ def test_best_survives_a_resume() -> None:
     assert restored == pytest.approx(0.45)
 
 
+# --- потолок pos_weight -----------------------------------------------------
+
+
+def test_pos_weight_is_capped(tmp_path) -> None:
+    """Метка с тремя примерами на восемь тысяч получала вес 2686.
+
+    Её слагаемое съедало всю функцию потерь: на реальном прогоне train-потеря
+    была 0.52, а val-потеря 23.7 — почти целиком из этого веса.
+    """
+    from src.config import load_config
+    from src.data.dataset import Sample
+    from src.models.train import pos_weight_tensor
+
+    config = load_config()
+    # 3 положительных примера unreadable на 8000 страниц — как в реальном прогоне.
+    samples = [
+        Sample(path=tmp_path / "x.png", labels={"unreadable": i < 3}, masks={}, source="real")
+        for i in range(8000)
+    ]
+
+    weights = pos_weight_tensor(config, samples, "cpu").numpy()
+    position = config.labels.index("unreadable")
+
+    assert weights[position] == pytest.approx(config.train.pos_weight_max)
+    assert weights.max() <= config.train.pos_weight_max
+
+
+def test_explicit_pos_weight_is_also_capped(tmp_path) -> None:
+    from src.config import load_config
+    from src.models.train import pos_weight_tensor
+
+    config = load_config()
+    explicit = [1000.0] * config.n_labels
+    config = config.model_copy(
+        update={"train": config.train.model_copy(update={"pos_weight": explicit})}
+    )
+
+    weights = pos_weight_tensor(config, [], "cpu").numpy()
+    assert weights.max() <= config.train.pos_weight_max
+
+
 # --- лог метрик -------------------------------------------------------------
 
 

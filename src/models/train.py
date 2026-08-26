@@ -21,6 +21,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import random
 import sys
 import time
@@ -30,8 +31,14 @@ from typing import Optional
 import numpy as np
 
 from src.config import Config, load_config
-from src.data.dataset import PatchDataset, collect_real, collect_synthetic, load_split
-from src.data.dataset import positive_weights
+from src.data.dataset import (
+    PatchDataset,
+    collect_real,
+    collect_synthetic,
+    flatten_patches,
+    load_split,
+    positive_weights,
+)
 from src.models.evaluate import evaluate, format_table, summary
 from src.models.model import build_model, load_checkpoint, save_checkpoint
 
@@ -86,20 +93,32 @@ def build_loaders(args, config: Config):
     # дрожит от смены патчей, а не от обучения.
     val_set = PatchDataset(real_val, config, train=False, seed=config.train.seed)
 
+    # Батч теперь измеряется в СТРАНИЦАХ: датасет отдаёт все патчи страницы
+    # сразу, чтобы не декодировать её по разу на каждый патч.
+    pages_per_batch = max(1, config.train.batch_size // config.dataset.patches_per_page)
+    # Воркеров не больше, чем ядер: в Colab их два, и лишние процессы только
+    # мешают друг другу.
+    workers = min(config.dataset.workers, os.cpu_count() or 1)
+    if workers < config.dataset.workers:
+        logger.info("Воркеров: %d вместо %d — столько ядер", workers, config.dataset.workers)
+
     loaders = (
         DataLoader(
             train_set,
-            batch_size=config.train.batch_size,
+            batch_size=pages_per_batch,
             shuffle=True,
-            num_workers=config.dataset.workers,
+            num_workers=workers,
             drop_last=True,
             pin_memory=True,
+            persistent_workers=workers > 0,
+            prefetch_factor=4 if workers > 0 else None,
         ),
         DataLoader(
             val_set,
             batch_size=config.train.batch_size,
             shuffle=False,
-            num_workers=config.dataset.workers,
+            num_workers=workers,
+            persistent_workers=workers > 0,
         ),
     )
     return loaders, synthetic + real_train
@@ -130,11 +149,24 @@ def pos_weight_tensor(config: Config, samples, device: str):
             raise SystemExit(f"train.pos_weight: нужно {config.n_labels} чисел")
     else:
         weights = positive_weights(samples, config.labels)
+
+    # Потолок обязателен: метка с тремя примерами на восемь тысяч страниц
+    # получает вес 2686, и её слагаемое съедает всю функцию потерь.
+    capped = np.minimum(weights, config.train.pos_weight_max)
+    for label, before, after in zip(config.labels, weights, capped):
+        if after < before:
+            logger.warning(
+                "pos_weight[%s] урезан с %.0f до %.0f — примеров почти нет, "
+                "метка так не выучится",
+                label,
+                before,
+                after,
+            )
     logger.info(
         "pos_weight: %s",
-        ", ".join(f"{label} {value:.1f}" for label, value in zip(config.labels, weights)),
+        ", ".join(f"{label} {value:.1f}" for label, value in zip(config.labels, capped)),
     )
-    return torch.tensor(weights, device=device)
+    return torch.tensor(capped, device=device)
 
 
 def update_best(best: float, value: float) -> tuple[float, bool]:
@@ -165,7 +197,8 @@ def train_epoch(model, loader, criterion, optimizer, device: str) -> float:
     model.train()
     total = 0.0
     seen = 0
-    for batch, target in loader:
+    for pages, page_targets in loader:
+        batch, target = flatten_patches(pages, page_targets)
         batch, target = batch.to(device, non_blocking=True), target.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         loss = criterion(model(batch), target)
@@ -183,7 +216,8 @@ def validation_loss(model, loader, criterion, device: str) -> float:
     total = 0.0
     seen = 0
     with torch.no_grad():
-        for batch, target in loader:
+        for pages, page_targets in loader:
+            batch, target = flatten_patches(pages, page_targets)
             batch, target = batch.to(device), target.to(device)
             loss = criterion(model(batch), target)
             total += float(loss.item()) * batch.size(0)

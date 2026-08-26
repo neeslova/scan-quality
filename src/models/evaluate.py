@@ -108,11 +108,14 @@ def predict(model, loader, device: str = "cpu") -> tuple[np.ndarray, np.ndarray]
     """Прогон по загрузчику -> (истина, вероятности)."""
     import torch
 
+    from src.data.dataset import flatten_patches
+
     model.eval()
     truths: list[np.ndarray] = []
     scores: list[np.ndarray] = []
     with torch.no_grad():
-        for batch, target in loader:
+        for pages, page_targets in loader:
+            batch, target = flatten_patches(pages, page_targets)
             logits = model(batch.to(device))
             scores.append(torch.sigmoid(logits).cpu().numpy())
             truths.append(target.numpy())

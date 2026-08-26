@@ -156,9 +156,7 @@ def glare(gray: np.ndarray, severity: float, config: Config, rng: np.random.Gene
     return Degraded(np.clip(out, 0, 255).astype(np.uint8), mask)
 
 
-def shadow(
-    gray: np.ndarray, severity: float, config: Config, rng: np.random.Generator
-) -> Degraded:
+def shadow(gray: np.ndarray, severity: float, config: Config, rng: np.random.Generator) -> Degraded:
     """Затемнение у одного края — как от переплёта или крышки сканера."""
     height, width = gray.shape
     depth = _lerp(config.synth.span("shadow", "depth"), severity)

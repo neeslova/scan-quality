@@ -126,13 +126,39 @@ def test_patch_prefers_text(config: Config, tmp_path) -> None:
     assert with_text >= 8
 
 
-def test_patch_size_is_always_the_configured_one(config: Config, page_file) -> None:
+def test_page_yields_all_its_patches_at_once(config: Config, page_file) -> None:
+    """Один декод страницы вместо `patches_per_page`: на двух ядрах это решало всё."""
     sample = Sample(path=page_file, labels={"blur": True}, masks={}, source="real")
     dataset = PatchDataset([sample], config, train=True)
 
     tensor, target = dataset[0]
-    assert tuple(tensor.shape) == (3, config.data.patch_size, config.data.patch_size)
-    assert tuple(target.shape) == (config.n_labels,)
+    patch = config.data.patch_size
+    assert tuple(tensor.shape) == (config.dataset.patches_per_page, 3, patch, patch)
+    assert tuple(target.shape) == (config.dataset.patches_per_page, config.n_labels)
+
+
+def test_validation_yields_one_patch_per_page(config: Config, page_file) -> None:
+    sample = Sample(path=page_file, labels={}, masks={}, source="real")
+    tensor, target = PatchDataset([sample], config, train=False)[0]
+    assert tensor.shape[0] == 1 and target.shape[0] == 1
+
+
+def test_flatten_merges_pages_and_patches(config: Config, page_file) -> None:
+    """DataLoader собирает батч из страниц, модель принимает патчи."""
+    import torch
+
+    from src.data.dataset import flatten_patches
+
+    samples = [Sample(path=page_file, labels={}, masks={}, source="real")] * 3
+    dataset = PatchDataset(samples, config, train=True)
+    pages = torch.stack([dataset[i][0] for i in range(3)])
+    targets = torch.stack([dataset[i][1] for i in range(3)])
+
+    batch, target = flatten_patches(pages, targets)
+    patch = config.data.patch_size
+    expected = 3 * config.dataset.patches_per_page
+    assert tuple(batch.shape) == (expected, 3, patch, patch)
+    assert tuple(target.shape) == (expected, config.n_labels)
 
 
 def test_tiny_page_is_upscaled_to_patch(config: Config, tmp_path) -> None:
@@ -142,7 +168,7 @@ def test_tiny_page_is_upscaled_to_patch(config: Config, tmp_path) -> None:
 
     sample = Sample(path=path, labels={}, masks={}, source="real")
     tensor, _ = PatchDataset([sample], config, train=False)[0]
-    assert tuple(tensor.shape) == (3, config.data.patch_size, config.data.patch_size)
+    assert tuple(tensor.shape) == (1, 3, config.data.patch_size, config.data.patch_size)
 
 
 def test_validation_is_deterministic(config: Config, page_file) -> None:
@@ -155,9 +181,10 @@ def test_validation_is_deterministic(config: Config, page_file) -> None:
     assert bool((first == second).all())
 
 
-def test_length_counts_patches_per_page(config: Config, page_file) -> None:
+def test_length_counts_pages(config: Config, page_file) -> None:
+    """Длина в страницах: патчи страницы выдаются одним элементом."""
     samples = [Sample(path=page_file, labels={}, masks={}, source="real")] * 5
-    assert len(PatchDataset(samples, config, train=True)) == 5 * config.dataset.patches_per_page
+    assert len(PatchDataset(samples, config, train=True)) == 5
     assert len(PatchDataset(samples, config, train=False)) == 5
 
 

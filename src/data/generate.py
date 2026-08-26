@@ -300,9 +300,7 @@ def reproduce(
 
         target = out_dir / record.image
         target.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])[1].tofile(
-            str(target)
-        )
+        cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])[1].tofile(str(target))
         for label, relative in record.masks.items():
             mask = masks.get(label)
             if mask is not None:
@@ -369,9 +367,7 @@ def contact_sheets(
 
 
 def _pad(tile: np.ndarray, gap: int) -> np.ndarray:
-    return cv2.copyMakeBorder(
-        tile, gap, gap, gap, gap, cv2.BORDER_CONSTANT, value=255
-    )
+    return cv2.copyMakeBorder(tile, gap, gap, gap, gap, cv2.BORDER_CONSTANT, value=255)
 
 
 def main() -> None:
