@@ -1,0 +1,51 @@
+# Единая точка правды: метки, пути, гиперпараметры, пороги.
+# Магических чисел в коде быть не должно — всё сюда.
+
+labels:
+  - blur
+  - glare
+  - shadow
+  - skew
+  - cropped
+  - low_resolution
+  - low_contrast
+  - noise
+  - streaks
+  - unreadable
+
+# Пути относительно корня репозитория.
+paths:
+  raw: data/raw
+  labeled: data/labeled
+  synthetic: data/synthetic
+  splits: data/splits
+  models: models
+  reports: reports
+
+data:
+  patch_size: 384
+  target_dpi: 300
+  grid: { rows: 9, cols: 6 }
+  # Как схлопывать предсказания по патчам в один скор на страницу.
+  aggregation:
+    local: [glare, shadow, cropped, streaks] # max
+    global: [blur, skew, low_resolution, low_contrast, noise, unreadable] # mean
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  dropout: 0.2
+
+train:
+  epochs: 30
+  batch_size: 32
+  lr: 3.0e-4
+  optimizer: adamw
+  scheduler: cosine
+  seed: 42
+  pos_weight: auto # "auto" — считать по частотам в train, либо список из 10 чисел
+
+verdict:
+  tau_low: 0.30 # калибруется в calibrate.py (С6), здесь — начальные значения
+  tau_high: 0.60
+  tau_unreadable: 0.50

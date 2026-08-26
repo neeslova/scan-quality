@@ -1,0 +1,12 @@
+# Только для Colab (T4). Локально не ставим: torch на CPU нужен лишь для отладки,
+# и то опционально — инференс идёт через onnxruntime.
+-r requirements.txt
+
+torch>=2.1
+torchvision>=0.16
+timm>=0.9
+albumentations>=1.3
+augraphy>=8.2
+scikit-learn>=1.3
+matplotlib>=3.7
+tqdm>=4.66

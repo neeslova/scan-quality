@@ -1,0 +1,28 @@
+# данные и веса — никогда в репозиторий
+data/
+models/
+runs/
+reports/*
+!reports/.gitkeep
+
+# окружение
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# инструменты
+.claude/
+.vscode/
+.idea/
+.ipynb_checkpoints/
+gradio_cached_examples/
+*.log

@@ -1,0 +1,14 @@
+# Локальное окружение (Windows, CPU): подготовка данных, CV-метрики, инференс, Gradio.
+# Обучение — только в Colab, см. requirements-train.txt
+# Установка: py -m pip install -U pip setuptools && py -m pip install -e .
+
+numpy>=1.24,<2.0
+opencv-python-headless>=4.8
+pillow>=10.0
+pymupdf>=1.23
+scipy>=1.10
+pyyaml>=6.0
+pydantic>=2.0
+pandas>=2.0
+gradio>=4.0
+onnxruntime>=1.16

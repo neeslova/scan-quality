@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scan-quality"
+version = "0.1.0"
+description = "Система оценки качества сканов документов с распознаванием дефектов"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+
+# Локальное окружение: Windows, CPU. Подготовка данных, CV-метрики, инференс, приложение.
+# Обучение живёт в Colab и ставится отдельно: pip install -e ".[train]"
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "opencv-python-headless>=4.8",
+    "pillow>=10.0",
+    "pymupdf>=1.23",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "gradio>=4.0",
+    "onnxruntime>=1.16",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "timm>=0.9",
+    "albumentations>=1.3",
+    "augraphy>=8.2",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "tqdm>=4.66",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+    "easyocr>=1.7",
+]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+    "black>=24.3",
+]
+
+[project.scripts]
+scanq-app = "src.app:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "C4"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
