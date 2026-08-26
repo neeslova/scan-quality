@@ -212,7 +212,7 @@ def write_frequency_report(
         elif counts[1] == 0 or counts[2] == 0:
             status = "**нет в val или test**"
         elif share < 0.15:
-            status = f"редкая, нужно ≥15%"
+            status = "редкая, нужно ≥15%"
         else:
             status = "ок"
         row = "".join(f" {c} |" for c in counts)

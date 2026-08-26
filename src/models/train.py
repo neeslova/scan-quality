@@ -192,7 +192,6 @@ def append_csv(path: Path, row: dict) -> None:
 
 
 def train_epoch(model, loader, criterion, optimizer, device: str) -> float:
-    import torch
 
     model.train()
     total = 0.0

@@ -11,8 +11,8 @@ F1 при 0.5 всё равно логируется: по нему в запи�
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Sequence
 
 import numpy as np
 

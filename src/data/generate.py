@@ -176,7 +176,6 @@ def generate(
 
     planner = np.random.default_rng(config.synth.seed)
     images_dir = out_dir / "images"
-    masks_dir = out_dir / "masks"
     images_dir.mkdir(parents=True, exist_ok=True)
 
     counts: Counter = Counter()
@@ -278,7 +277,6 @@ def reproduce(
     сотни мегабайт: в Colab едет рецепт, а страницы собираются на месте за минуты.
     """
     images_dir = out_dir / "images"
-    masks_dir = out_dir / "masks"
     images_dir.mkdir(parents=True, exist_ok=True)
     restored = 0
 
@@ -310,7 +308,6 @@ def reproduce(
         if index % 100 == 0:
             print(f"  восстановлено {index}/{len(records)}", file=sys.stderr, flush=True)
 
-    _ = masks_dir  # каталог создаётся при первой маске
     return restored
 
 
