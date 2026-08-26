@@ -109,6 +109,32 @@ class CVConfig(_Section):
         return self
 
 
+class LabelingConfig(_Section):
+    auto_labels: list[str] = Field(default_factory=list)
+    suggest_threshold: float = Field(ge=0.0, le=1.0)
+    sample_total: int = Field(gt=0)
+    random_share: float = Field(ge=0.0, le=1.0)
+    sample_seed: int
+
+
+class SplitConfig(_Section):
+    ratios: dict[str, float]
+    seed: int
+    document_id: Literal["bates7", "stem", "parent"] = "bates7"
+
+    @model_validator(mode="after")
+    def _check_ratios(self) -> SplitConfig:
+        expected = {"train", "val", "test"}
+        if set(self.ratios) != expected:
+            raise ValueError(f"split.ratios: нужны ровно {sorted(expected)}")
+        if any(value <= 0.0 for value in self.ratios.values()):
+            raise ValueError("split.ratios: все доли должны быть положительными")
+        total = sum(self.ratios.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"split.ratios: сумма должна быть 1.0, получено {total}")
+        return self
+
+
 class ModelConfig(_Section):
     backbone: str
     pretrained: bool = True
@@ -160,6 +186,8 @@ class Config(_Section):
     paths: PathsConfig
     data: DataConfig
     cv: CVConfig
+    labeling: LabelingConfig
+    split: SplitConfig
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
@@ -193,7 +221,17 @@ class Config(_Section):
         unknown_cv = sorted(set(self.cv.scores) - expected)
         if unknown_cv:
             raise ValueError(f"cv.scores: метки вне таксономии: {unknown_cv}")
+
+        unknown_auto = sorted(set(self.labeling.auto_labels) - expected)
+        if unknown_auto:
+            raise ValueError(f"labeling.auto_labels: метки вне таксономии: {unknown_auto}")
         return self
+
+    @property
+    def manual_labels(self) -> list[str]:
+        """Метки, которые ставит человек: всё, кроме выводимых автоматически."""
+        auto = set(self.labeling.auto_labels)
+        return [label for label in self.labels if label not in auto]
 
     @property
     def n_labels(self) -> int:

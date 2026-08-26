@@ -68,3 +68,52 @@ class QualityReport(_Model):
 
     def to_json(self, indent: int = 2) -> str:
         return self.model_dump_json(indent=indent, exclude_none=False)
+
+
+class PrelabelRecord(_Model):
+    """Черновая разметка страницы по CV-метрикам — вход для ручного разметчика."""
+
+    image: str  # путь относительно корня корпуса
+    document: str  # id документа: сплит идёт по нему, не по странице
+    corpus: str
+
+    scores: dict[str, float] = Field(default_factory=dict)
+    suggested: dict[str, bool] = Field(default_factory=dict)
+    # Метки, которые на этой странице измерить нечем: чекбокс не предзаполняем,
+    # решает человек.
+    not_applicable: list[str] = Field(default_factory=list)
+
+    verdict: Verdict = "good"
+    quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    width: int = Field(default=0, ge=0)
+    height: int = Field(default=0, ge=0)
+
+    @property
+    def suspicion(self) -> float:
+        """Насколько страница подозрительна: по ней сортируем очередь разметки."""
+        return max(self.scores.values(), default=0.0)
+
+
+class LabelRecord(_Model):
+    """Одна размеченная человеком страница. Хранится строкой в labels.jsonl.
+
+    `prelabel` сохраняется намеренно: по нему потом видно, сколько галочек
+    разметчик снял или добавил, то есть насколько CV-предразметка помогала
+    и где она систематически врёт.
+    """
+
+    image: str
+    document: str
+    corpus: str
+
+    labels: dict[str, bool] = Field(default_factory=dict)
+    prelabel: dict[str, float] = Field(default_factory=dict)
+
+    annotator: str = ""
+    timestamp: str = ""
+    duration_s: float = Field(default=0.0, ge=0.0)
+    notes: str = ""
+
+    @property
+    def positive(self) -> list[str]:
+        return sorted(label for label, present in self.labels.items() if present)

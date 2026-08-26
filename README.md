@@ -14,7 +14,7 @@
 |---|---|---|
 | С0 | каркас, конфиг, схема, заглушка приложения | ✅ |
 | С1 | CV-метрики (baseline) | ✅ |
-| С2 | разметка | — |
+| С2 | разметка | инструменты готовы, ждёт ручной работы |
 | С3 | OCR-слой | — |
 | С4 | синтетика | — |
 | С5 | обучение | — |
@@ -42,6 +42,29 @@ python -m src.app --image scan.jpg     # один файл в консоль, б
 pytest                                 # тесты
 ruff check . && black --check .        # линт
 ```
+
+## Разметка (С2)
+
+```powershell
+# 1. черновые метки по CV и очередь на разметку
+python -m src.labeling.prelabel --data data\raw\tobacco3482\data `
+    --corpus-name tobacco3482 --out data\labeled\prelabels_tobacco.jsonl `
+    --queue data\labeled\queue_tobacco.json
+
+# 2. разметчик: 1-9 переключают дефект, пробел - страница чистая,
+#    стрелки - навигация, запись после каждой страницы
+python -m src.labeling.app --data data\raw\tobacco3482\data `
+    --queue data\labeled\queue_tobacco.json --labels data\labeled\labels.jsonl
+
+# 3. сплит по документам + отчёт по частотам меток
+python -m src.data.split --labels data\labeled\labels.jsonl --out data\splits
+```
+
+Очередь набирается наполовину случайно, наполовину — верхушкой по каждой метке.
+Чистый рандом даёт правдивые частоты, но два-три примера редкого дефекта на 800
+страниц; отбор только по подозрительности учит модель ровно тем дефектам, которые
+CV и так ловит. `labels.jsonl` только дозаписывается: повторная разметка страницы
+добавляет строку, при чтении берётся последняя, история правок остаётся.
 
 ## Структура
 
