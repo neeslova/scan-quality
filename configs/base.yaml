@@ -83,26 +83,37 @@ cv:
   streak_smooth_frac: 0.02
 
   # Сырую метрику переводим в скор 0..1 линейной интерполяцией между двумя якорями.
-  # good — значение, при котором дефекта заведомо нет, bad — заведомо есть.
+  # good — значение типичной страницы, bad — хвост распределения.
   # Направление выводится само: good может быть как больше bad, так и меньше.
-  # Значения предварительные — уточняются в С2 по реальным сканам.
+  #
+  # Откалибровано по 250 случайным сканам Tobacco3482:
+  #   python -m src.metrics.calibrate_anchors --data data/raw/tobacco3482/data --limit 250
+  # Абсолютные значения не универсальны (Tenengrad зависит от гарнитуры, кегля и dpi),
+  # поэтому под другой корпус блок пересчитывается заново. Это шкала подозрительности
+  # для предразметки, а не пороги вердикта — пороги считаются по PR-кривым в С6.
   scores:
     # tenengrad_norm = Tenengrad / (разрыв бумага-чернила)². Делить обязательно:
     # блёклая печать роняет градиент так же, как расфокус, и без нормировки
     # low_contrast неотличим от blur.
-    blur: { metric: tenengrad_norm, good: 3.5, bad: 0.8 }
+    blur: { metric: tenengrad_norm, good: 0.988, bad: 0.459 }
+    shadow: { metric: shadow_frac, good: 0.0, bad: 0.064 }
+    skew: { metric: skew_abs_deg, good: 0.0, bad: 1.555 }
+    cropped: { metric: min_margin_frac, good: 0.023, bad: 0.0 }
+    # Высота строки — в пикселях ИСХОДНОГО файла: если скан пришёл уменьшенным,
+    # разрешение потеряно, даже когда рабочая копия приведена к целевому dpi.
+    low_resolution: { metric: source_line_height_px, good: 26.0, bad: 6.45 }
+    streaks: { metric: streak_energy, good: 0.0, bad: 0.078 }
+
+    # Ниже — якоря, которые на Tobacco откалибровать нельзя, оставлены прежними.
+    # Они заданы в физических единицах, а не в единицах корпуса, и на полутоновых
+    # сканах (Yenisei) осмысленны.
+    # glare: в Tobacco пересвета нет вовсе — планшет и микрофильм, а не фотосъёмка,
+    # все значения нули, перцентили вырождаются.
     glare: { metric: glare_cluster_frac, good: 0.0, bad: 0.04 }
-    shadow: { metric: shadow_frac, good: 0.005, bad: 0.15 }
-    skew: { metric: skew_abs_deg, good: 0.3, bad: 3.0 }
-    cropped: { metric: min_margin_frac, good: 0.04, bad: 0.002 }
-    # Высота строки — в пикселях ИСХОДНОГО файла, до нормализации dpi:
-    # после приведения к 300 dpi низкое разрешение уже не видно по высоте строки.
-    low_resolution: { metric: source_line_height_px, good: 26.0, bad: 13.0 }
+    # low_contrast и noise: все страницы Tobacco битональные, обе метрики там
+    # неизмеримы и в распределение не попадают (см. cv.bitonal_*).
     low_contrast: { metric: ink_paper_gap, good: 110.0, bad: 30.0 }
     noise: { metric: noise_sigma, good: 2.0, bad: 12.0 }
-    # Самый слабый CV-сигнал: размытие и апскейл дают похожий остаток по колонкам.
-    # Якоря нарочно широкие, чтобы не плодить ложные срабатывания; полосы — задача CNN.
-    streaks: { metric: streak_energy, good: 0.006, bad: 0.025 }
 
 model:
   backbone: efficientnet_b0

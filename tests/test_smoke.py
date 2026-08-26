@@ -110,7 +110,10 @@ def test_low_resolution_detected(config: Config, tmp_path) -> None:
     assert (report.width, report.height) == (620, 800)  # не растянут
     assert report.cv_metrics["dpi"] == pytest.approx(150.0, rel=1e-3)
     assert report.cv_metrics["source_line_height_px"] < 16
-    assert report.scores()["low_resolution"] > 0.7
+    # Порог, а не конкретное число: якоря пересчитываются под корпус,
+    # а требование — чтобы метка поднялась выше tau_low и попала в вердикт.
+    assert report.scores()["low_resolution"] > config.verdict.tau_low
+    assert report.verdict != "good"
 
 
 def test_bitonal_scan_marks_metrics_not_applicable(config: Config, tmp_path) -> None:
