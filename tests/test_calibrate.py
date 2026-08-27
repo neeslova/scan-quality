@@ -203,3 +203,73 @@ def test_overlay_loads_as_a_real_config(config: Config, tmp_path) -> None:
     assert loaded.verdict.anchors["blur"].bad == pytest.approx(result.bad)
     # Остальное наследуется от базового конфига без изменений.
     assert loaded.verdict.tau_low == config.verdict.tau_low
+
+
+# --- пороги самого вердикта -------------------------------------------------
+
+
+def test_tradeoff_counts_clean_and_severe_separately() -> None:
+    """Калибровка меток настраивает каждую отдельно, а `good` требует, чтобы
+    НИ ОДНА не превысила порог. Цена объединения видна только на странице."""
+    from src.models.calibrate import verdict_tradeoff
+
+    tops = [0.10, 0.20, 0.90, 0.95, 0.50]
+    defects = [0, 0, 0, 3, 3]
+
+    row = verdict_tradeoff(tops, defects, tau_low=0.30, tau_high=0.60, severe=3)
+
+    assert (row.clean_total, row.clean_good, row.clean_bad) == (3, 2, 1)
+    assert (row.severe_total, row.severe_good, row.severe_bad) == (2, 0, 1)
+
+
+def test_loosening_thresholds_trades_clean_pages_for_missed_damage() -> None:
+    """Ровно тот компромисс, который нельзя выбрать автоматически.
+
+    Смягчение спасает чистые страницы и начинает пропускать тяжело битые.
+    Раздел 4 говорит, что второе дороже, поэтому решение остаётся за человеком.
+    """
+    from src.models.calibrate import verdict_tradeoff
+
+    tops = [0.50, 0.55, 0.65, 0.70]
+    defects = [0, 0, 3, 3]
+
+    strict = verdict_tradeoff(tops, defects, 0.30, 0.60, severe=3)
+    loose = verdict_tradeoff(tops, defects, 0.60, 0.80, severe=3)
+
+    assert strict.clean_bad == 0 and strict.clean_good == 0
+    assert loose.clean_good == 2  # чистые спасены
+    assert loose.severe_bad < strict.severe_bad  # ценой пропущенных
+
+
+def test_page_defect_count_skips_ocr_label() -> None:
+    """`unreadable` выводится из OCR и в правиле имеет свой порог (решение №7)."""
+    from src.models.calibrate import PageScores
+
+    page = PageScores(
+        scores={"blur": 0.8, "unreadable": 0.9},
+        labels={"blur": True, "skew": False, "unreadable": True},
+    )
+
+    assert page.defect_count() == 2
+    assert page.defect_count(exclude=["unreadable"]) == 1
+    assert page.top() == pytest.approx(0.9)
+
+
+def test_by_label_skips_pages_where_the_source_stayed_silent(config: Config) -> None:
+    """Метку нельзя калибровать по страницам, на которых её не измеряли.
+
+    На битональном скане контраст и шум неизмеримы, и страница просто не должна
+    попасть в выборку этой метки — иначе калибруем по выдуманным нулям.
+    """
+    from src.models.calibrate import PageScores, by_label
+
+    pages = [
+        PageScores(scores={"blur": 0.4, "noise": 0.2}, labels={"blur": True, "noise": False}),
+        PageScores(scores={"blur": 0.1}, labels={"blur": False, "noise": True}),
+    ]
+
+    truth, scored = by_label(pages, ["blur", "noise"])
+
+    assert scored["blur"] == [0.4, 0.1]
+    assert scored["noise"] == [0.2]  # вторая страница шума не измеряла
+    assert truth["noise"] == [0.0]

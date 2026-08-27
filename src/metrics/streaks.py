@@ -29,27 +29,53 @@ _MAD_TO_SIGMA = 1.4826
 _OUTLIER_SIGMAS = 3.0
 
 
-def _profile_energy(profile: np.ndarray, smooth: int) -> float:
-    """Энергия аномальных колонок после вычитания плавного тренда.
+def _profile_excess(profile: np.ndarray, smooth: int) -> tuple[np.ndarray, float]:
+    """Превышение над робастным разбросом по каждой колонке и уровень фона.
 
     Обычное СКО остатка здесь не работает: равномерный шум даёт по всему профилю
     примерно ту же энергию, что и несколько настоящих полос, и метрика перестаёт
     их различать. Полоса — редкий сильный выброс, поэтому считаем только ту часть
     остатка, что вылезает за робастный разброс.
+
+    Возвращается сам вектор превышений, а не только его энергия: по нему слой
+    локализации (С7) показывает, КАКИЕ колонки признаны полосами. Считать это
+    вторым способом значило бы показывать не то, по чему выставлен скор.
     """
     if profile.size < 5:
-        return 0.0
+        return np.zeros_like(profile, dtype=np.float64), 0.0
     kernel = max(3, smooth | 1)
     trend = cv2.blur(profile.reshape(1, -1).astype(np.float64), (kernel, 1))[0]
     residual = profile - trend
 
     level = float(np.median(profile))
     if level <= 0.0:
-        return 0.0
+        return np.zeros_like(profile, dtype=np.float64), 0.0
 
     sigma = float(np.median(np.abs(residual))) * _MAD_TO_SIGMA
-    excess = np.maximum(np.abs(residual) - _OUTLIER_SIGMAS * sigma, 0.0)
+    return np.maximum(np.abs(residual) - _OUTLIER_SIGMAS * sigma, 0.0), level
+
+
+def _profile_energy(profile: np.ndarray, smooth: int) -> float:
+    """Энергия аномальных колонок после вычитания плавного тренда."""
+    excess, level = _profile_excess(profile, smooth)
+    if level <= 0.0:
+        return 0.0
     return float(np.sqrt(np.mean(excess**2)) / level)
+
+
+def streak_mask(gray: np.ndarray, smooth_frac: float = 0.02) -> np.ndarray:
+    """Колонки и строки, признанные полосами. Та же арифметика, что у скора."""
+    if gray.size == 0:
+        return np.zeros_like(gray, dtype=bool)
+
+    height, width = gray.shape
+    columns, _ = _profile_excess(_background_profile(gray, axis=0), int(width * smooth_frac))
+    rows, _ = _profile_excess(_background_profile(gray, axis=1), int(height * smooth_frac))
+
+    mask = np.zeros((height, width), dtype=bool)
+    mask[:, columns > 0.0] = True
+    mask[rows > 0.0, :] = True
+    return mask
 
 
 def _background_profile(gray: np.ndarray, axis: int) -> np.ndarray:

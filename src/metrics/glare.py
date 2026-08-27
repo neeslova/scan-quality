@@ -26,6 +26,56 @@ class GlareStats:
     paper_level: float  # уровень бумаги, от которого считался пересвет
 
 
+def _clusters(
+    gray: np.ndarray,
+    threshold: int,
+    min_cluster_frac: float,
+    flat_window_frac: float,
+    flat_std: float,
+    min_excess: int,
+) -> tuple[np.ndarray, list[int], float, float]:
+    """(маска уцелевших кластеров, их площади, доля ярких пикселей, уровень бумаги).
+
+    Вынесено из `glare_stats`, чтобы ту же самую маску мог показать пользователю
+    слой локализации (С7): рисовать блик отдельной, второй реализацией значило бы
+    показывать не то, по чему выставлен скор.
+    """
+    area = float(gray.size)
+    # Медиана страницы — это бумага: текст всегда в меньшинстве.
+    paper_level = float(np.median(gray))
+
+    bright = gray >= max(threshold, paper_level + min_excess)
+    bright_frac = float(np.count_nonzero(gray >= threshold) / area)
+
+    window = max(3, int(min(gray.shape) * flat_window_frac) | 1)
+    flat = local_std(gray, window) < flat_std
+    mask = (bright & flat).astype(np.uint8)
+
+    n_labels, labelled, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    min_area = min_cluster_frac * area
+    keep = [i for i in range(1, n_labels) if stats[i, cv2.CC_STAT_AREA] >= min_area]
+
+    kept_mask = np.isin(labelled, keep) if keep else np.zeros(gray.shape, dtype=bool)
+    return kept_mask, [int(stats[i, cv2.CC_STAT_AREA]) for i in keep], bright_frac, paper_level
+
+
+def glare_mask(
+    gray: np.ndarray,
+    threshold: int = 245,
+    min_cluster_frac: float = 0.0005,
+    flat_window_frac: float = 0.02,
+    flat_std: float = 3.0,
+    min_excess: int = 8,
+) -> np.ndarray:
+    """Где именно пересвет. Ровно та маска, по которой считается скор."""
+    if gray.size == 0:
+        return np.zeros_like(gray, dtype=bool)
+    mask, _, _, _ = _clusters(
+        gray, threshold, min_cluster_frac, flat_window_frac, flat_std, min_excess
+    )
+    return mask
+
+
 def glare_stats(
     gray: np.ndarray,
     threshold: int = 245,
@@ -39,23 +89,9 @@ def glare_stats(
         return GlareStats(0.0, 0.0, 0, 0.0, 0.0)
 
     area = float(gray.size)
-    # Медиана страницы — это бумага: текст всегда в меньшинстве.
-    paper_level = float(np.median(gray))
-
-    bright = gray >= max(threshold, paper_level + min_excess)
-    bright_frac = float(np.count_nonzero(gray >= threshold) / area)
-
-    window = max(3, int(min(gray.shape) * flat_window_frac) | 1)
-    flat = local_std(gray, window) < flat_std
-    mask = (bright & flat).astype(np.uint8)
-
-    n_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    min_area = min_cluster_frac * area
-    kept = [
-        int(stats[i, cv2.CC_STAT_AREA])
-        for i in range(1, n_labels)
-        if stats[i, cv2.CC_STAT_AREA] >= min_area
-    ]
+    _, kept, bright_frac, paper_level = _clusters(
+        gray, threshold, min_cluster_frac, flat_window_frac, flat_std, min_excess
+    )
     if not kept:
         return GlareStats(bright_frac, 0.0, 0, 0.0, paper_level)
 

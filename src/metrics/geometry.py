@@ -180,6 +180,40 @@ def margin_fractions(
     )
 
 
+def border_ink_mask(
+    gray: np.ndarray,
+    band_frac: float = DEFAULT_BAND_FRAC,
+    frame_span_frac: float = DEFAULT_FRAME_SPAN_FRAC,
+    block_frac: float = DEFAULT_INK_BLOCK_FRAC,
+    offset: int = DEFAULT_INK_OFFSET,
+    denoise_frac: float = DEFAULT_DENOISE_FRAC,
+    binary: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Где именно штрихи рассечены границей кадра.
+
+    Ровно те пиксели приграничной полосы, что дали `border_ink.coverage`: слой
+    локализации (С7) обязан показывать доказательство, по которому выставлен
+    скор, а не похожую картинку, нарисованную отдельно.
+    """
+    if gray.size == 0:
+        return np.zeros_like(gray, dtype=bool)
+
+    if binary is None:
+        binary = denoise_ink(binarize_ink(gray, block_frac, offset), denoise_frac)
+    height, width = binary.shape
+    band = max(1, int(min(height, width) * band_frac))
+
+    frame = frame_component_mask(binary, frame_span_frac)
+    text = (binary > 0) & ~frame
+
+    mask = np.zeros((height, width), dtype=bool)
+    mask[:band, :] |= text[:band, :].any(axis=0)[None, :]
+    mask[-band:, :] |= text[-band:, :].any(axis=0)[None, :]
+    mask[:, :band] |= text[:, :band].any(axis=1)[:, None]
+    mask[:, -band:] |= text[:, -band:].any(axis=1)[:, None]
+    return mask
+
+
 def border_ink(
     gray: np.ndarray,
     band_frac: float = DEFAULT_BAND_FRAC,

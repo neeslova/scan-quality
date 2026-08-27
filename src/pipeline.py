@@ -211,8 +211,13 @@ def analyze(
 def analyze_all_pages(
     image_path: Union[str, Path],
     config: Optional[Config] = None,
+    with_ocr: bool = False,
 ) -> list[QualityReport]:
-    """Все страницы файла. Для картинки — один отчёт, для PDF — по одному на страницу."""
+    """Все страницы файла. Для картинки — один отчёт, для PDF — по одному на страницу.
+
+    Вердикт ставится СТРАНИЦЕ, а не файлу: вопрос про вердикт документу целиком
+    открыт (раздел 14 плана) и здесь не решается.
+    """
     cfg = config or load_config()
     predictor = shared_predictor(cfg)
     reports: list[QualityReport] = []
@@ -223,5 +228,5 @@ def analyze_all_pages(
         allow_upscale=cfg.data.allow_upscale,
     ):
         started = time.perf_counter()
-        reports.append(build_report(loaded, cfg, started, predictor=predictor))
+        reports.append(build_report(loaded, cfg, started, with_ocr, predictor))
     return reports

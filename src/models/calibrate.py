@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,7 @@ from typing import Optional
 import numpy as np
 
 from src.config import Config, load_config
+from src.metrics.baseline import score_from_anchors
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +202,72 @@ def format_table(results: list[Calibration], config: Config) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class VerdictTradeoff:
+    """Во что обходится пара порогов вердикта на странице целиком."""
+
+    tau_low: float
+    tau_high: float
+    clean_good: int
+    clean_bad: int
+    clean_total: int
+    severe_good: int
+    severe_bad: int
+    severe_total: int
+
+
+def verdict_tradeoff(
+    page_scores: list[float], defects: list[int], tau_low: float, tau_high: float, severe: int = 3
+) -> VerdictTradeoff:
+    """Что даёт пара порогов на уровне СТРАНИЦЫ, а не метки.
+
+    Калибровка меток настраивает каждую по отдельности, но вердикт — объединение
+    по девяти: `good` требует, чтобы НИ ОДНА не превысила `tau_low`. Даже при
+    хорошей точности каждой метки объединение накрывает почти всё, и `good`
+    становится редким механически. Это отмечено ещё в С1 и калибровкой меток
+    не лечится — здесь считается цена уже по странице.
+
+    Смотреть надо на две колонки сразу. Смягчение порогов спасает чистые
+    страницы, но начинает пропускать тяжело битые: на val переход с 0.30/0.60 на
+    0.45/0.70 снизил долю отвергнутых чистых с 37% до 3% ценой падения отлова
+    страниц с тремя дефектами с 89% до 59%, и одна такая страница получила
+    `good`. Раздел 4 говорит, что дороже, поэтому выбор не автоматический.
+    """
+    tops = np.asarray(page_scores, dtype=float)
+    counts = np.asarray(defects, dtype=int)
+
+    clean = tops[counts == 0]
+    heavy = tops[counts >= severe]
+    return VerdictTradeoff(
+        tau_low=tau_low,
+        tau_high=tau_high,
+        clean_good=int((clean <= tau_low).sum()),
+        clean_bad=int((clean > tau_high).sum()),
+        clean_total=len(clean),
+        severe_good=int((heavy <= tau_low).sum()),
+        severe_bad=int((heavy > tau_high).sum()),
+        severe_total=len(heavy),
+    )
+
+
+def format_tradeoff(rows: list[VerdictTradeoff]) -> str:
+    lines = [
+        f"{'tau_low':>8s}{'tau_high':>9s} | "
+        f"{'чистые good':>12s}{'чистые bad':>12s} | {'3+ good':>9s}{'3+ bad':>9s}",
+        "-" * 66,
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.tau_low:8.2f}{row.tau_high:9.2f} | "
+            f"{row.clean_good:6d}/{row.clean_total:<5d}{row.clean_bad:6d}/{row.clean_total:<5d} | "
+            f"{row.severe_good:4d}/{row.severe_total:<4d}{row.severe_bad:4d}/{row.severe_total:<4d}"
+        )
+    lines.append("")
+    lines.append("`3+ good` обязан оставаться нулём: пропустить тяжело битую страницу —")
+    lines.append("самая дорогая ошибка системы (раздел 4 плана).")
+    return "\n".join(lines)
+
+
 def to_overlay(results: list[Calibration]) -> dict:
     """Оверлей поверх base.yaml: только то, что отличается (решение №24)."""
     return {
@@ -209,8 +277,26 @@ def to_overlay(results: list[Calibration]) -> dict:
     }
 
 
-def collect_scores(samples, config: Config, with_ocr: bool) -> tuple[dict, dict]:
-    """Прогон страниц целиком через пайплайн: (истина, скоры) по меткам.
+@dataclass(frozen=True)
+class PageScores:
+    """Одна страница: что выдал пайплайн и что стоит в разметке."""
+
+    scores: dict[str, float]
+    labels: dict[str, bool]
+
+    def defect_count(self, exclude: Sequence[str] = ()) -> int:
+        """Сколько дефектов у страницы по разметке. `unreadable` обычно исключают:
+        она выводится из OCR и в правиле вердикта имеет свой порог."""
+        skip = set(exclude)
+        return sum(1 for label, on in self.labels.items() if on and label not in skip)
+
+    def top(self) -> float:
+        """Худшая метка страницы: правило вердикта смотрит именно на неё."""
+        return max(self.scores.values()) if self.scores else 0.0
+
+
+def collect_scores(samples, config: Config, with_ocr: bool) -> list[PageScores]:
+    """Прогон страниц целиком через пайплайн.
 
     Именно через пайплайн, а не мимо него: калибруются те самые числа, которые
     потом попадут в отчёт, со всеми источниками и агрегацией.
@@ -220,8 +306,7 @@ def collect_scores(samples, config: Config, with_ocr: bool) -> tuple[dict, dict]
     from src.pipeline import build_report
 
     predictor = shared_predictor(config)
-    truth: dict[str, list[float]] = {label: [] for label in config.labels}
-    scored: dict[str, list[float]] = {label: [] for label in config.labels}
+    pages: list[PageScores] = []
 
     for index, sample in enumerate(samples, 1):
         page = load_page(
@@ -231,15 +316,33 @@ def collect_scores(samples, config: Config, with_ocr: bool) -> tuple[dict, dict]
             allow_upscale=config.data.allow_upscale,
         )
         report = build_report(page, config, time.perf_counter(), with_ocr, predictor)
-        page_scores = report.scores()
-        for label in config.labels:
-            if label not in page_scores:
-                continue
-            truth[label].append(1.0 if sample.labels.get(label) else 0.0)
-            scored[label].append(page_scores[label])
+        pages.append(
+            PageScores(
+                scores=report.scores(),
+                labels={label: bool(sample.labels.get(label)) for label in config.labels},
+            )
+        )
         if index % 20 == 0:
             logger.info("%d/%d", index, len(samples))
 
+    return pages
+
+
+def by_label(pages: list[PageScores], labels: Sequence[str]) -> tuple[dict, dict]:
+    """Развернуть постранично собранное по меткам: (истина, скоры).
+
+    Метка попадает в выборку только со страниц, где источник её ВЫДАЛ. Длины
+    поэтому разные, и это правильно: метку нельзя калибровать по страницам,
+    на которых её не измеряли (битональный скан, строки не найдены).
+    """
+    truth: dict[str, list[float]] = {label: [] for label in labels}
+    scored: dict[str, list[float]] = {label: [] for label in labels}
+    for page in pages:
+        for label in labels:
+            if label not in page.scores:
+                continue
+            truth[label].append(1.0 if page.labels.get(label) else 0.0)
+            scored[label].append(page.scores[label])
     return truth, scored
 
 
@@ -264,7 +367,8 @@ def main() -> None:
 
     _, images = load_split(args.splits, args.part)
     samples = collect_real(args.labels, args.data, images)
-    truth, scored = collect_scores(samples, config, args.with_ocr)
+    pages = collect_scores(samples, config, args.with_ocr)
+    truth, scored = by_label(pages, config.labels)
 
     results = []
     for label in config.labels:
@@ -286,6 +390,30 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"\nякоря записаны в {args.out} — накладывать флагом --corpus")
+
+    # Второй уровень: пороги самого вердикта. Калибровка меток настраивает
+    # каждую по отдельности, а `good` требует, чтобы НИ ОДНА не превысила порог.
+    # Цену этого объединения видно только на странице целиком.
+    anchors = to_overlay(results)["verdict"]["anchors"]
+    tops, counts = [], []
+    for page in pages:
+        fixed = [
+            (
+                score_from_anchors(value, anchors[label]["good"], anchors[label]["bad"])
+                if label in anchors
+                else value
+            )
+            for label, value in page.scores.items()
+        ]
+        tops.append(max(fixed) if fixed else 0.0)
+        counts.append(page.defect_count(exclude=config.ocr_derived))
+
+    grid = [(0.30, 0.60), (0.40, 0.65), (0.45, 0.70), (0.50, 0.75), (0.60, 0.80)]
+    print(
+        f"\nпороги вердикта на странице целиком (сейчас в конфиге "
+        f"{config.verdict.tau_low:.2f}/{config.verdict.tau_high:.2f}):"
+    )
+    print(format_tradeoff([verdict_tradeoff(tops, counts, lo, hi) for lo, hi in grid]))
 
 
 if __name__ == "__main__":

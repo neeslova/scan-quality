@@ -46,6 +46,32 @@ def background(gray: np.ndarray, window_frac: float = 0.06) -> np.ndarray:
     return cv2.resize(paper, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
 
 
+def _background_and_mask(
+    gray: np.ndarray, rel_threshold: float, window_frac: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Карта освещённости и маска затенённого. Одна точка правды для обеих."""
+    bg = background(gray, window_frac).astype(np.float64)
+    median = float(np.median(bg))
+    if median <= 0.0:
+        return bg, np.ones(gray.shape, dtype=bool)
+    return bg, bg < rel_threshold * median
+
+
+def shadow_mask(
+    gray: np.ndarray,
+    rel_threshold: float = 0.82,
+    window_frac: float = 0.06,
+) -> np.ndarray:
+    """Где именно тень. Ровно та маска, по которой считается `dark_frac`.
+
+    Нужна слою локализации (С7): рисовать пользователю вторую, отдельно
+    написанную тень значило бы показывать не то, по чему выставлен скор.
+    """
+    if gray.size == 0:
+        return np.zeros_like(gray, dtype=bool)
+    return _background_and_mask(gray, rel_threshold, window_frac)[1]
+
+
 def shadow_stats(
     gray: np.ndarray,
     rel_threshold: float = 0.82,
@@ -55,12 +81,12 @@ def shadow_stats(
     if gray.size == 0:
         return ShadowStats(0.0, 0.0, 1.0)
 
-    bg = background(gray, window_frac).astype(np.float64)
+    bg, mask = _background_and_mask(gray, rel_threshold, window_frac)
     median = float(np.median(bg))
     if median <= 0.0:
         return ShadowStats(1.0, 0.0, 0.0)
 
-    dark_frac = float(np.count_nonzero(bg < rel_threshold * median) / bg.size)
+    dark_frac = float(mask.mean())
     p5, p95 = np.percentile(bg, [5.0, 95.0])
     return ShadowStats(
         dark_frac=dark_frac,
