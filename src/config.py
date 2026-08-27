@@ -249,6 +249,7 @@ class PathsConfig(_Section):
     splits: Path
     models: Path
     reports: Path
+    onnx_model: Path
 
 
 class VerdictConfig(_Section):

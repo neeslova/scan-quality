@@ -13,8 +13,18 @@ from tests import factories as fx
 
 
 @pytest.fixture(scope="module")
-def config() -> Config:
-    return load_config()
+def config(tmp_path_factory) -> Config:
+    """Конфиг без модели: путь к quality.onnx намеренно указывает в пустоту.
+
+    Иначе тест зависел бы от того, лежит ли на этой машине обученная сеть, —
+    а в репозиторий она не попадает. Гибрид с сетью проверяется отдельно,
+    в `test_cnn_labels_come_from_the_network`.
+    """
+    config = load_config()
+    absent = tmp_path_factory.mktemp("nomodel") / "quality.onnx"
+    return config.model_copy(
+        update={"paths": config.paths.model_copy(update={"onnx_model": absent})}
+    )
 
 
 @pytest.fixture(scope="module")
@@ -79,9 +89,10 @@ def test_analyze_returns_valid_report(config: Config, scan: str) -> None:
     assert isinstance(report, QualityReport)
     assert report.image == "scan_001.png"
     assert (report.width, report.height) == (1200, 1600)
-    assert report.pipeline_version == "cv-baseline"
+    # Модели нет — работают CV и только он, и версия это говорит.
+    assert report.pipeline_version == "cv"
     assert report.verdict in {"good", "acceptable", "bad"}
-    assert set(report.scores()) == set(config.cv.scores)
+    assert set(report.scores()) == set(config.sources.cv)
     assert all(d.source == "cv" for d in report.defects)
     # отчёт отсортирован по убыванию вероятности
     assert report.defects == sorted(report.defects, key=lambda d: d.score, reverse=True)
@@ -116,11 +127,14 @@ def test_low_resolution_detected(config: Config, tmp_path) -> None:
     assert report.verdict != "good"
 
 
-def test_bitonal_scan_marks_metrics_not_applicable(config: Config, tmp_path) -> None:
-    """На битональном скане low_contrast и noise неизмеримы — их не должно быть в отчёте.
+def test_bitonal_scan_without_a_model_reports_nothing_measured(config: Config, tmp_path) -> None:
+    """Битональный скан: CV не измеряет контраст и шум, а сети нет — значит нечем.
 
     Разрыв бумага/чернила там всегда максимален, а шум обнулён самой бинаризацией:
     формально метрики дадут уверенный ноль, но это ноль от отсутствия шкалы.
+    Отсутствие метки в defects обязано читаться как «не измерено», а не «дефекта
+    нет», — иначе автоматическая проверка примет непроверенный скан за хороший.
+    Ровно поэтому по замеру эти две метки отданы сети (решение №40).
     """
     page = fx.text_page(width=1200, height=1600)
     bitonal = ((page > 128) * 255).astype(page.dtype)
@@ -129,11 +143,47 @@ def test_bitonal_scan_marks_metrics_not_applicable(config: Config, tmp_path) -> 
 
     report = analyze(path, config)
     assert report.cv_metrics["mid_tone_frac"] < config.cv.bitonal_max_mid_frac
-    assert report.not_applicable == ["low_contrast", "noise"]
+    assert "low_contrast" in report.not_applicable
+    assert "noise" in report.not_applicable
     assert "low_contrast" not in report.scores()
     assert "noise" not in report.scores()
-    # полутоновая страница ведёт себя как раньше
-    assert analyze(scan_path(tmp_path), config).not_applicable == []
+
+    # Метки чужих источников тоже помечены: OCR не запускался, сети нет.
+    assert set(report.not_applicable) == {"low_contrast", "noise", "unreadable"}
+    # На полутоновой странице CV свои метки измеряет, чужие остаются чужими.
+    halftone = analyze(scan_path(tmp_path), config)
+    assert set(halftone.not_applicable) == {"low_contrast", "noise", "unreadable"}
+    assert set(halftone.scores()) == set(config.sources.cv)
+
+
+def test_cnn_labels_come_from_the_network(config: Config, tmp_path) -> None:
+    """С моделью две метки приходят от сети, и CV по ним больше не спрашивают.
+
+    CV-слой умеет считать контраст и шум, но проигрывает по ним сети (AP 0.425
+    и 0.543 против неизмеримого на битональном корпусе), поэтому берётся сеть.
+    """
+    from src.models.export_onnx import page_like_batch  # noqa: F401  (тот же модуль)
+    from src.models.model import build_model, export_onnx
+
+    model_path = tmp_path / "tiny.onnx"
+    export_onnx(
+        build_model("mobilenetv3_small_100", config.n_labels, pretrained=False),
+        model_path,
+        config.data.patch_size,
+    )
+    with_model = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"onnx_model": model_path})}
+    )
+
+    report = analyze(scan_path(tmp_path), with_model)
+
+    assert report.pipeline_version == "cv+cnn"
+    by_source = {d.label: d.source for d in report.defects}
+    assert by_source["low_contrast"] == "cnn"
+    assert by_source["noise"] == "cnn"
+    assert by_source["blur"] == "cv"
+    # Неизмеримость у CV этих меток больше не наша забота: за них отвечает сеть.
+    assert report.not_applicable == ["unreadable"]
 
 
 def scan_path(tmp_path) -> str:
@@ -160,5 +210,7 @@ def test_app_handler(config: Config, scan: str) -> None:
 
     verdict, defects, metrics, payload = _run(scan, config)
     assert payload["verdict"] in {"good", "acceptable", "bad"}
-    assert set(defects) == set(config.cv.scores)
+    # Модели в этом конфиге нет: приходят ровно метки CV-слоя, не все, что он
+    # умеет считать. `low_contrast` и `noise` отданы сети (решение №40).
+    assert set(defects) == set(config.sources.cv)
     assert len(metrics) > 5

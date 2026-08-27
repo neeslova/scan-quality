@@ -39,6 +39,9 @@ paths:
   splits: data/splits
   models: models
   reports: reports
+  # Сеть для инференса. Отсутствие файла — рабочее состояние, а не ошибка:
+  # без него система считает по CV-метрикам и OCR, просто без меток сети.
+  onnx_model: models/quality.onnx
 
 data:
   patch_size: 384

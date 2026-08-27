@@ -28,14 +28,10 @@ import numpy as np
 from src.config import Config
 from src.data.generate import read_manifest
 from src.data.split import read_labels
-from src.imaging import binarize_ink
+from src.imaging import IMAGENET_MEAN, IMAGENET_STD, binarize_ink
 from src.io.loader import load_page
 
 logger = logging.getLogger(__name__)
-
-# ImageNet-статистика: backbone предобучен на ней, и своя нормировка сбила бы её.
-IMAGENET_MEAN = 0.449
-IMAGENET_STD = 0.226
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from src.config import Config, load_config
-from src.data.dataset import IMAGENET_MEAN, IMAGENET_STD
+from src.imaging import IMAGENET_MEAN, IMAGENET_STD
 from src.models.model import build_model, export_onnx, load_checkpoint
 
 logger = logging.getLogger(__name__)

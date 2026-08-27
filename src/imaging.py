@@ -8,6 +8,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+# ImageNet-статистика: backbone предобучен на ней, и своя нормировка сбила бы её.
+# Живёт здесь, а не рядом с обучением: ровно так же патч нормируют экспорт
+# и инференс, а тянуть ради двух чисел модуль обучающего датасета им незачем.
+IMAGENET_MEAN = 0.449
+IMAGENET_STD = 0.226
+
 DEFAULT_INK_BLOCK_FRAC = 0.03
 DEFAULT_INK_OFFSET = 10
 

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from src.config import load_config
-from src.data.dataset import IMAGENET_MEAN, IMAGENET_STD
+from src.imaging import IMAGENET_MEAN, IMAGENET_STD
 from src.models.export_onnx import TOLERANCE, max_divergence, page_like_batch
 
 
