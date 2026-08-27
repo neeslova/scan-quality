@@ -252,10 +252,30 @@ class PathsConfig(_Section):
     onnx_model: Path
 
 
+class CalibrateConfig(_Section):
+    target_recall: float = Field(gt=0.0, le=1.0)
+    confident_recall: float = Field(gt=0.0, le=1.0)
+    recall: dict[str, float] = Field(default_factory=dict)
+    min_support: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _check_order(self) -> CalibrateConfig:
+        if self.confident_recall >= self.target_recall:
+            raise ValueError(
+                "calibrate: требуется confident_recall < target_recall, иначе точка "
+                "«бесспорно плохо» не строже точки «подозрительно»: "
+                f"{self.confident_recall} >= {self.target_recall}"
+            )
+        return self
+
+
 class VerdictConfig(_Section):
     tau_low: float = Field(ge=0.0, le=1.0)
     tau_high: float = Field(ge=0.0, le=1.0)
     tau_unreadable: float = Field(ge=0.0, le=1.0)
+    # Тот же AnchorPair, что у CV-метрик: «0 в good, 1 в bad» — одна и та же
+    # механика, только уровнем выше, над скором метки, а не над сырой метрикой.
+    anchors: dict[str, AnchorPair] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_order(self) -> VerdictConfig:
@@ -297,6 +317,7 @@ class Config(_Section):
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
+    calibrate: CalibrateConfig
 
     @property
     def ocr_derived(self) -> list[str]:
@@ -348,6 +369,14 @@ class Config(_Section):
         unknown_auto = sorted(set(self.labeling.auto_labels) - expected)
         if unknown_auto:
             raise ValueError(f"labeling.auto_labels: метки вне таксономии: {unknown_auto}")
+
+        unknown_anchors = sorted(set(self.verdict.anchors) - expected)
+        if unknown_anchors:
+            raise ValueError(f"verdict.anchors: метки вне таксономии: {unknown_anchors}")
+
+        unknown_recall = sorted(set(self.calibrate.recall) - expected)
+        if unknown_recall:
+            raise ValueError(f"calibrate.recall: метки вне таксономии: {unknown_recall}")
         return self
 
     @property

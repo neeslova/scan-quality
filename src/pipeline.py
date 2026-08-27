@@ -24,7 +24,7 @@ from typing import Optional, Union
 
 from src.config import Config, VerdictConfig, load_config
 from src.io.loader import LoadedPage, load_page, load_pages
-from src.metrics.baseline import analyze_page
+from src.metrics.baseline import analyze_page, score_from_anchors
 from src.models.infer import PatchPredictor, shared_predictor
 from src.ocr.engine import read_page, shared_engine
 from src.ocr.readability import analyze_words, unreadable_score
@@ -46,6 +46,28 @@ def decide_verdict(scores: Mapping[str, float], cfg: VerdictConfig) -> Verdict:
     if any(score > cfg.tau_low for score in scores.values()):
         return "acceptable"
     return "good"
+
+
+def apply_anchors(scores: Mapping[str, float], config: Config) -> dict[str, float]:
+    """Скоры источников -> общая шкала.
+
+    Три источника меряют в трёх разных единицах, и одно правило вердикта на них
+    работать не может: на замере у `blur` при пороге 0.5 выходила точность 1.000
+    при полноте 0.080 — сеть ранжирует верно, но её средние по патчам до 0.5 не
+    доходят. Якоря (С6, `calibrate.py`) растягивают шкалу каждой метки так, чтобы
+    общие `tau_low` и `tau_high` попали в её рабочие точки.
+
+    Метка без якорей идёт как есть: это честнее, чем притворяться откалиброванной.
+    """
+    anchors = config.verdict.anchors
+    return {
+        label: (
+            round(score_from_anchors(value, anchors[label].good, anchors[label].bad), 4)
+            if label in anchors
+            else value
+        )
+        for label, value in scores.items()
+    }
 
 
 def quality_score(scores: Mapping[str, float]) -> float:
@@ -83,13 +105,14 @@ def build_report(
     # CV-слой умеет считать больше меток, чем ему назначено: `low_contrast`
     # и `noise` он тоже выдаёт, но проигрывает по ним сети, поэтому берём только
     # своё. Сырые метрики при этом остаются в отчёте все — они для разбора.
-    scores: dict[str, float] = {}
-    defects: list[DefectScore] = []
+    raw_scores: dict[str, float] = {}
+    origin: dict[str, str] = {}
+    hot: dict[str, list[int]] = {}
     for label, score in cv_scores.items():
         if config.sources.of(label) != "cv":
             continue
-        scores[label] = score
-        defects.append(DefectScore(label=label, score=score, source="cv"))
+        raw_scores[label] = score
+        origin[label] = "cv"
 
     # Неприменимость чужой метки нас не касается: за неё отвечает другой источник.
     missing = {label for label in cv_skipped if config.sources.of(label) == "cv"}
@@ -102,15 +125,9 @@ def build_report(
             prediction = predictor.predict(page.gray)
             predicted = prediction.scores()
             for label in config.sources.cnn:
-                scores[label] = predicted[label]
-                defects.append(
-                    DefectScore(
-                        label=label,
-                        score=predicted[label],
-                        source="cnn",
-                        top_patches=prediction.top_patches(label),
-                    )
-                )
+                raw_scores[label] = predicted[label]
+                origin[label] = "cnn"
+                hot[label] = prediction.top_patches(label)
 
     ocr_result = None
     if with_ocr:
@@ -119,10 +136,23 @@ def build_report(
             # Пустая страница не нечитаема: распознавать нечего, а не плохо.
             missing.update(config.sources.ocr)
         else:
-            scores["unreadable"] = unreadable
-            defects.append(DefectScore(label="unreadable", score=unreadable, source="ocr"))
+            raw_scores["unreadable"] = unreadable
+            origin["unreadable"] = "ocr"
     else:
         missing.update(config.sources.ocr)
+
+    # Вердикт считается по приведённой шкале, а не по сырым числам источников.
+    scores = apply_anchors(raw_scores, config)
+    defects = [
+        DefectScore(
+            label=label,
+            score=value,
+            raw=raw_scores[label],
+            source=origin[label],
+            top_patches=hot.get(label, []),
+        )
+        for label, value in scores.items()
+    ]
 
     not_applicable = sorted(missing)
     defects.sort(key=lambda d: d.score, reverse=True)
