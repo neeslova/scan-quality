@@ -89,20 +89,37 @@ def test_unreachable_recall_is_reported_as_such() -> None:
 # --- якоря ------------------------------------------------------------------
 
 
-def test_anchors_put_the_global_thresholds_on_the_operating_points(config: Config) -> None:
-    """Ключевое свойство: правило вердикта из раздела 4 не меняется ни на строку.
-
-    Меняется шкала, на которой оно применяется. Порог полноты обязан попасть
-    ровно в `tau_low`, порог точности — ровно в `tau_high`, иначе калибровка
-    сдвигает рабочую точку метки и цифры перестают значить обещанное.
-    """
-    tau_low, tau_high = config.verdict.tau_low, config.verdict.tau_high
+def test_anchors_put_the_reference_points_on_the_operating_points(config: Config) -> None:
+    """Ключевое свойство шкалы: рабочие точки метки попадают в опорные значения."""
+    low, high = config.calibrate.anchor_low, config.calibrate.anchor_high
     t_recall, t_precision = 0.18, 0.42
 
-    good, bad = anchors_from_operating_points(t_recall, t_precision, tau_low, tau_high)
+    good, bad = anchors_from_operating_points(t_recall, t_precision, low, high)
 
-    assert score_from_anchors(t_recall, good, bad) == pytest.approx(tau_low, abs=1e-9)
-    assert score_from_anchors(t_precision, good, bad) == pytest.approx(tau_high, abs=1e-9)
+    assert score_from_anchors(t_recall, good, bad) == pytest.approx(low, abs=1e-9)
+    assert score_from_anchors(t_precision, good, bad) == pytest.approx(high, abs=1e-9)
+
+
+def test_scale_is_built_from_anchor_points_not_verdict_thresholds(config: Config) -> None:
+    """Развязка из решения №45: иначе круг — якоря строятся относительно порога,
+    а порог подбирается по якорям.
+
+    Пороги вердикта подобраны на странице целиком и потому СТРОЖЕ опорных точек;
+    если бы шкала строилась по ним, каждый такой подбор сдвигал бы саму шкалу
+    и следующий замер мерил бы уже другую величину.
+    """
+    y_true = np.array([1.0] * 20 + [0.0] * 70)
+    y_score = np.concatenate([np.linspace(1.0, 0.6, 20), np.linspace(0.4, 0.0, 70)])
+
+    result = calibrate_label("blur", y_true, y_score, config)
+
+    assert result is not None
+    # Допуск 1e-3, а не машинный: якоря округляются до четвёртого знака, чтобы
+    # оверлей оставался читаемым, и это даёт ошибку порядка 1e-4 на шкале.
+    on_scale = score_from_anchors(result.t_low, result.good, result.bad)
+    assert on_scale == pytest.approx(config.calibrate.anchor_low, abs=1e-3)
+    # Именно опорная точка, а не порог вердикта: они намеренно разные.
+    assert config.verdict.tau_low != config.calibrate.anchor_low
 
 
 def test_anchors_stay_monotone_when_the_points_collapse(config: Config) -> None:

@@ -253,6 +253,10 @@ class PathsConfig(_Section):
 
 
 class CalibrateConfig(_Section):
+    # Опорные точки шкалы метки. Намеренно отвязаны от verdict.tau_*: иначе
+    # якоря строятся относительно порога, а порог подбирается по якорям — круг.
+    anchor_low: float = Field(ge=0.0, le=1.0)
+    anchor_high: float = Field(ge=0.0, le=1.0)
     target_recall: float = Field(gt=0.0, le=1.0)
     confident_recall: float = Field(gt=0.0, le=1.0)
     recall: dict[str, float] = Field(default_factory=dict)
@@ -265,6 +269,11 @@ class CalibrateConfig(_Section):
                 "calibrate: требуется confident_recall < target_recall, иначе точка "
                 "«бесспорно плохо» не строже точки «подозрительно»: "
                 f"{self.confident_recall} >= {self.target_recall}"
+            )
+        if self.anchor_low >= self.anchor_high:
+            raise ValueError(
+                "calibrate: требуется anchor_low < anchor_high, иначе шкала метки "
+                f"переворачивается: {self.anchor_low} >= {self.anchor_high}"
             )
         return self
 

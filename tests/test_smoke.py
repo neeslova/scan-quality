@@ -205,12 +205,75 @@ def test_app_handler(config: Config, scan: str) -> None:
     """Хендлер Gradio отдаёт четыре выхода и не требует самой Gradio."""
     from src.app import _run
 
-    verdict, defects, metrics, payload = _run(None, config)
-    assert (defects, metrics, payload) == ({}, [], {})
+    verdict, defects, metrics, payload, page, shown = _run(None, False, config)
+    assert (defects, metrics, payload, page) == ({}, [], {}, None)
 
-    verdict, defects, metrics, payload = _run(scan, config)
+    verdict, defects, metrics, payload, page, shown = _run(scan, False, config)
     assert payload["verdict"] in {"good", "acceptable", "bad"}
     # Модели в этом конфиге нет: приходят ровно метки CV-слоя, не все, что он
     # умеет считать. `low_contrast` и `noise` отданы сети (решение №40).
     assert set(defects) == set(config.sources.cv)
     assert len(metrics) > 5
+    # Страница возвращается для карты дефекта, список — что можно показать.
+    assert page is not None and page.ndim == 2
+    assert set(shown) <= set(config.sources.cv)
+
+
+# --- приложение: источники, карта, батч -------------------------------------
+
+
+def test_defect_table_names_the_source(config: Config, scan: str) -> None:
+    """Семь меток из десяти — детерминированные CV-метрики, две — сеть, одна — OCR.
+
+    Без подписи пользователь читает десять чисел как одинаковые по природе.
+    """
+    from src.app import defect_rows
+    from src.pipeline import analyze
+
+    report = analyze(scan, config)
+    rows = defect_rows(report, config)
+
+    by_label = {row[0]: row for row in rows}
+    assert by_label["blur"][2] == "CV-метрика"
+    # Неизмеренное показано строкой, а не молчанием: пустое место читается
+    # как «дефекта нет» (решение №21).
+    assert by_label["noise"][1] == "не измерено"
+    assert by_label["unreadable"][1] == "не измерено"
+
+
+def test_map_is_refused_for_a_global_defect(config: Config, scan: str) -> None:
+    """Подсветить «здесь размыто» на равномерно размытом скане честно нельзя."""
+    import numpy as np
+
+    from src.app import _heatmap
+
+    gray = np.asarray(fx.text_page(width=600, height=800))
+    assert _heatmap(gray, "blur", config) is None
+    assert _heatmap(None, "glare", config) is None
+    assert _heatmap(gray, None, config) is None
+
+
+def test_map_is_drawn_for_a_local_defect(config: Config) -> None:
+    import numpy as np
+
+    from src.app import _heatmap
+
+    gray = np.asarray(fx.text_page(width=600, height=800))
+    image = _heatmap(gray, "glare", config)
+
+    assert image is not None
+    assert image.shape == (*gray.shape, 3)
+
+
+def test_batch_survives_a_broken_file(config: Config, tmp_path, scan: str) -> None:
+    """Один битый файл не должен ронять весь батч: это пакетный режим."""
+    from src.app import batch_rows
+
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not an image")
+
+    rows = batch_rows([scan, str(broken)], False, config)
+
+    assert len(rows) == 2
+    assert rows[0][1] in {"good", "acceptable", "bad"}
+    assert rows[1][1] == "ошибка"

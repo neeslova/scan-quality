@@ -164,11 +164,13 @@ def calibrate_label(
 
     scores, precision, recall = sweep(y_true, y_score)
     high, low = points
+    # Опорные точки шкалы, а НЕ пороги вердикта. Иначе получается круг: якоря
+    # строились бы относительно порога, а порог подбирается по якорям (№45).
     good, bad = anchors_from_operating_points(
         float(scores[low]),
         float(scores[high]),
-        config.verdict.tau_low,
-        config.verdict.tau_high,
+        cfg.anchor_low,
+        cfg.anchor_high,
     )
     return Calibration(
         label=label,
