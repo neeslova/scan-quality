@@ -265,9 +265,26 @@ class VerdictConfig(_Section):
         return self
 
 
+class SourcesConfig(_Section):
+    """Кто выдаёт какую метку. Заполняется по замеру, а не по замыслу."""
+
+    cv: list[str] = Field(default_factory=list)
+    cnn: list[str] = Field(default_factory=list)
+    ocr: list[str] = Field(default_factory=list)
+
+    def all_labels(self) -> list[str]:
+        return [*self.cv, *self.cnn, *self.ocr]
+
+    def of(self, label: str) -> str:
+        for name in ("cv", "cnn", "ocr"):
+            if label in getattr(self, name):
+                return name
+        raise KeyError(f"метке {label} не назначен источник")
+
+
 class Config(_Section):
     labels: list[str]
-    ocr_derived: list[str] = Field(default_factory=list)
+    sources: SourcesConfig
     paths: PathsConfig
     data: DataConfig
     cv: CVConfig
@@ -279,6 +296,11 @@ class Config(_Section):
     model: ModelConfig
     train: TrainConfig
     verdict: VerdictConfig
+
+    @property
+    def ocr_derived(self) -> list[str]:
+        """Метки не от сети: в макро-среднее обучения они не входят (решение №38)."""
+        return list(self.sources.ocr)
 
     @model_validator(mode="after")
     def _check_labels(self) -> Config:
@@ -310,9 +332,17 @@ class Config(_Section):
         if unknown_cv:
             raise ValueError(f"cv.scores: метки вне таксономии: {unknown_cv}")
 
-        unknown_ocr = sorted(set(self.ocr_derived) - expected)
-        if unknown_ocr:
-            raise ValueError(f"ocr_derived: метки вне таксономии: {unknown_ocr}")
+        assigned = self.sources.all_labels()
+        duplicates = sorted({name for name in assigned if assigned.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"sources: метка у двух источников сразу: {duplicates}")
+        if set(assigned) != expected:
+            missing = sorted(expected - set(assigned))
+            unknown = sorted(set(assigned) - expected)
+            raise ValueError(
+                "sources должна покрывать ровно labels; "
+                f"без источника: {missing}, лишние: {unknown}"
+            )
 
         unknown_auto = sorted(set(self.labeling.auto_labels) - expected)
         if unknown_auto:

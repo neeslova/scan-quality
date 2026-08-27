@@ -33,6 +33,9 @@ dependencies = [
 [project.optional-dependencies]
 train = [
     "torch>=2.1",
+    # Нужен именно экспорту: torch.onnx.export падает без него. В инференсе не
+    # участвует — там onnxruntime из базовых зависимостей.
+    "onnx>=1.15",
     "torchvision>=0.16",
     "timm>=0.9",
     "albumentations>=1.3",

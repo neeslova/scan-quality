@@ -75,3 +75,47 @@ def test_shipped_corpus_overlays_load() -> None:
     for path in files:
         config = load_config(overlays=path)
         assert set(config.cv.scores) <= set(config.labels), path.name
+
+
+# --- источники меток --------------------------------------------------------
+
+
+def test_sources_cover_every_label_exactly_once() -> None:
+    """Пропуск означал бы метку, которую никто не считает, дубль — тихий арбитраж."""
+    config = load_config()
+    assigned = config.sources.all_labels()
+
+    assert sorted(assigned) == sorted(config.labels)
+    assert len(assigned) == len(set(assigned))
+
+
+def test_label_without_a_source_is_rejected(tmp_path) -> None:
+    overlay = tmp_path / "gap.yaml"
+    overlay.write_text(
+        yaml.safe_dump({"sources": {"cv": ["blur"], "cnn": [], "ocr": ["unreadable"]}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="без источника"):
+        load_config(overlays=overlay)
+
+
+def test_label_from_two_sources_is_rejected(tmp_path) -> None:
+    config = load_config()
+    both = {
+        "cv": list(config.sources.cv),
+        "cnn": [*config.sources.cnn, "blur"],
+        "ocr": list(config.sources.ocr),
+    }
+    overlay = tmp_path / "clash.yaml"
+    overlay.write_text(yaml.safe_dump({"sources": both}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="у двух источников"):
+        load_config(overlays=overlay)
+
+
+def test_ocr_derived_follows_sources() -> None:
+    """`ocr_derived` больше не отдельное поле: обучение спрашивает у `sources`."""
+    config = load_config()
+    assert config.ocr_derived == config.sources.ocr
+    assert config.sources.of("unreadable") == "ocr"
