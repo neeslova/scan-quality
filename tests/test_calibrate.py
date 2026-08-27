@@ -290,3 +290,27 @@ def test_by_label_skips_pages_where_the_source_stayed_silent(config: Config) -> 
     assert scored["blur"] == [0.4, 0.1]
     assert scored["noise"] == [0.2]  # вторая страница шума не измеряла
     assert truth["noise"] == [0.0]
+
+
+def test_degenerate_scale_is_refused(config: Config) -> None:
+    """Порог, севший на дно распределения, не отделяет ничего.
+
+    Так вышло у `streaks` после починки таблиц: 37% дефектных страниц дают
+    энергию ровно 0, и чтобы взять полноту 0.85, порог обязан включить весь
+    ноль. Шкала после этого назначает КАЖДОЙ странице скор не ниже anchor_low,
+    и этот пол поднимает вердикт по всему корпусу — две страницы с тремя
+    дефектами прошли как `good` именно из-за него.
+    """
+    # Половина дефектных неотличима от чистых: скор ровно 0 у всех.
+    y_true = np.array([1.0] * 20 + [0.0] * 70)
+    y_score = np.concatenate([np.linspace(0.9, 0.5, 10), np.zeros(10), np.zeros(70)])
+
+    assert calibrate_label("streaks", y_true, y_score, config) is None
+
+
+def test_separable_label_is_still_calibrated(config: Config) -> None:
+    """Защита не должна мешать нормальной метке."""
+    y_true = np.array([1.0] * 20 + [0.0] * 70)
+    y_score = np.concatenate([np.linspace(1.0, 0.6, 20), np.linspace(0.4, 0.0, 70)])
+
+    assert calibrate_label("blur", y_true, y_score, config) is not None

@@ -18,9 +18,6 @@ verdict:
     noise:
       good: -0.1161
       bad: 0.3836
-    streaks:
-      good: 0.0138
-      bad: 1.5931
     unreadable:
-      good: 0.4506
-      bad: 0.6313
+      good: 0.2616
+      bad: 1.0723

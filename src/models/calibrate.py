@@ -164,6 +164,23 @@ def calibrate_label(
 
     scores, precision, recall = sweep(y_true, y_score)
     high, low = points
+
+    # Вырожденная калибровка: порог «подозрительно» сел на дно распределения,
+    # то есть не отделяет ничего. Так вышло у `streaks` после починки таблиц:
+    # 37% дефектных страниц дают энергию ровно 0, и чтобы взять полноту 0.85,
+    # порог обязан включить весь ноль. Шкала после этого назначает КАЖДОЙ
+    # странице скор не ниже `anchor_low`, и этот пол поднимает вердикт по всему
+    # корпусу — две страницы с тремя дефектами прошли как `good` именно из-за
+    # него. Честнее не калибровать вовсе: сырой скор пойдёт в правило как есть.
+    below = float((y_score < scores[low]).mean())
+    if below < cfg.min_separated:
+        logger.warning(
+            "%s: порог %.4f ниже %.0f%% выборки — шкала вырождается в пол, не калибруем",
+            label,
+            float(scores[low]),
+            100.0 * below,
+        )
+        return None
     # Опорные точки шкалы, а НЕ пороги вердикта. Иначе получается круг: якоря
     # строились бы относительно порога, а порог подбирается по якорям (№45).
     good, bad = anchors_from_operating_points(
@@ -362,14 +379,39 @@ def main() -> None:
     parser.add_argument("--corpus", type=Path, action="append", default=None)
     parser.add_argument("--out", type=Path, default=Path("configs/thresholds.yaml"))
     parser.add_argument("--with-ocr", action="store_true", help="считать и unreadable")
+    parser.add_argument(
+        "--scores-cache",
+        type=Path,
+        default=None,
+        help="файл со скорами страниц: есть — читаем оттуда, нет — считаем и сохраняем. "
+        "Подбор якорей после этого мгновенный вместо прогона по всему корпусу",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_config(args.config, args.corpus)
 
-    _, images = load_split(args.splits, args.part)
-    samples = collect_real(args.labels, args.data, images)
-    pages = collect_scores(samples, config, args.with_ocr)
+    cache = args.scores_cache
+    if cache is not None and cache.is_file():
+        import json
+
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        pages = [PageScores(scores=row["scores"], labels=row["labels"]) for row in payload]
+        logger.info("скоры прочитаны из %s (%d страниц)", cache, len(pages))
+    else:
+        _, images = load_split(args.splits, args.part)
+        samples = collect_real(args.labels, args.data, images)
+        pages = collect_scores(samples, config, args.with_ocr)
+        if cache is not None:
+            import json
+            from dataclasses import asdict
+
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(
+                json.dumps([asdict(p) for p in pages], ensure_ascii=False), encoding="utf-8"
+            )
+            logger.info("скоры сохранены в %s", cache)
+
     truth, scored = by_label(pages, config.labels)
 
     results = []
@@ -383,7 +425,7 @@ def main() -> None:
         if calibration is not None:
             results.append(calibration)
 
-    print(f"\n{args.part}: {len(samples)} страниц")
+    print(f"\n{args.part}: {len(pages)} страниц")
     print(format_table(results, config))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

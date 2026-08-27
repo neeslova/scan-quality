@@ -270,6 +270,7 @@ class CalibrateConfig(_Section):
     confident_recall: float = Field(gt=0.0, le=1.0)
     recall: dict[str, float] = Field(default_factory=dict)
     min_support: int = Field(gt=0)
+    min_separated: float = Field(ge=0.0, lt=1.0)
 
     @model_validator(mode="after")
     def _check_order(self) -> CalibrateConfig:
