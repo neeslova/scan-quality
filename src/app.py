@@ -58,7 +58,7 @@ METRIC_ROWS: list[tuple[str, str]] = [
     ("n_informative_patches", "Патчей с текстом"),
 ]
 
-EMPTY = ("Загрузите скан", {}, [], {}, None, None)
+EMPTY = ("Загрузите скан", {}, [], {}, None, None, "")
 
 
 def _import_gradio():
@@ -104,7 +104,7 @@ def verdict_line(report: QualityReport) -> str:
     return line
 
 
-def _run(path: Optional[str], with_ocr: bool, config: Config):
+def _run(path: Optional[str], with_ocr: bool, config: Config, with_explain: bool = False):
     """Хендлер одиночного режима.
 
     Возвращает ещё и саму страницу: карту дефекта считаем по требованию, когда
@@ -122,6 +122,11 @@ def _run(path: Optional[str], with_ocr: bool, config: Config):
     import time
 
     report = build_report(page, config, time.perf_counter(), with_ocr, _predictor(config))
+    if with_explain:
+        # Декоратор над готовым отчётом (решение №2): не вышло — отчёт тот же.
+        from src.explain import with_explanation
+
+        report = with_explanation(report, config)
 
     shown = [label for label in localizable(config) if label in report.scores()]
     return (
@@ -131,6 +136,7 @@ def _run(path: Optional[str], with_ocr: bool, config: Config):
         report.model_dump(mode="json"),
         page.gray,
         shown,
+        report.explanation or "",
     )
 
 
@@ -208,9 +214,16 @@ def build_demo(config: Config):
                     ocr_flag = gr.Checkbox(
                         value=False, label="Считать unreadable (OCR, заметно медленнее)"
                     )
+                    explain_flag = gr.Checkbox(
+                        value=False,
+                        label="Пояснение текстом (внешний API; без сети просто не появится)",
+                    )
                     run_btn = gr.Button("Проверить", variant="primary")
                 with gr.Column(scale=1):
                     verdict = gr.Textbox(label="Вердикт", interactive=False)
+                    explanation = gr.Textbox(
+                        label="Пояснение", interactive=False, lines=3, show_copy_button=True
+                    )
                     defects = gr.Label(label="Вероятности дефектов", num_top_classes=6)
                     label_pick = gr.Dropdown(
                         label="Показать на скане", choices=[], interactive=True
@@ -224,9 +237,11 @@ def build_demo(config: Config):
                     )
                     report_json = gr.JSON(label="QualityReport")
 
-            def run_single(image_path, pdf_file, ocr_on):
+            def run_single(image_path, pdf_file, ocr_on, explain_on):
                 path = image_path or (pdf_file.name if pdf_file else None)
-                line, scores, table, payload, gray, shown = _run(path, ocr_on, config)
+                line, scores, table, payload, gray, shown, text = _run(
+                    path, ocr_on, config, explain_on
+                )
                 return (
                     line,
                     scores,
@@ -234,11 +249,21 @@ def build_demo(config: Config):
                     payload,
                     gray,
                     gr.update(choices=shown, value=shown[0] if shown else None),
+                    text,
                 )
 
-            outputs = [verdict, defects, metrics, report_json, page_state, label_pick]
-            run_btn.click(fn=run_single, inputs=[image, pdf, ocr_flag], outputs=outputs)
-            image.change(fn=run_single, inputs=[image, pdf, ocr_flag], outputs=outputs)
+            outputs = [
+                verdict,
+                defects,
+                metrics,
+                report_json,
+                page_state,
+                label_pick,
+                explanation,
+            ]
+            inputs = [image, pdf, ocr_flag, explain_flag]
+            run_btn.click(fn=run_single, inputs=inputs, outputs=outputs)
+            image.change(fn=run_single, inputs=inputs, outputs=outputs)
 
             label_pick.change(
                 fn=lambda gray, label: _heatmap(gray, label, config),

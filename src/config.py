@@ -252,6 +252,15 @@ class PathsConfig(_Section):
     onnx_model: Path
 
 
+class ExplainConfig(_Section):
+    """Внешний API как декоратор над готовым отчётом. По умолчанию выключен."""
+
+    enabled: bool = False
+    model: str
+    max_tokens: int = Field(gt=0)
+    timeout_s: float = Field(gt=0.0)
+
+
 class CalibrateConfig(_Section):
     # Опорные точки шкалы метки. Намеренно отвязаны от verdict.tau_*: иначе
     # якоря строятся относительно порога, а порог подбирается по якорям — круг.
@@ -327,6 +336,7 @@ class Config(_Section):
     train: TrainConfig
     verdict: VerdictConfig
     calibrate: CalibrateConfig
+    explain: ExplainConfig
 
     @property
     def ocr_derived(self) -> list[str]:
