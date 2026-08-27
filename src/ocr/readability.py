@@ -120,6 +120,36 @@ def nonword_ratio(words: Sequence[OCRWord], languages: Sequence[str]) -> float:
     return bad / len(tokens)
 
 
+def readable_share(words: Sequence[OCRWord], config: Config) -> float:
+    """Доля текста страницы, прочитанная уверенно и осмысленно.
+
+    Отвечает на вопрос «сколько текста я могу прочесть», а не «есть ли на
+    странице испорченное место», и в этом вся разница. Печать поверх текста,
+    подпись, штамп, вклейка — локальные помехи: они делают нечитаемым свой
+    участок, а остальная страница читается как обычно. Прежние сигналы считали
+    долю плохих токенов по всей странице, и печать, испортившая треть слов,
+    объявляла нечитаемым весь скан.
+
+    Здесь доля считается по ПЛОЩАДИ распознанных блоков, а не по их числу:
+    подпись из пяти неразборчивых росчерков не должна весить столько же,
+    сколько пять абзацев ровного текста.
+    """
+    if not words:
+        return 0.0
+
+    vowels = _vowels_for(config.ocr.languages)
+    total = sum(max(w.area, 1) for w in words)
+    good = sum(
+        max(w.area, 1)
+        for w in words
+        if w.confidence >= config.ocr.min_confidence
+        and any(
+            _is_plausible_word(t.strip(".,;:!?()[]{}«»\"'-–—/\\"), vowels) for t in w.text.split()
+        )
+    )
+    return good / total if total else 0.0
+
+
 def analyze_words(
     words: Sequence[OCRWord],
     config: Config,
@@ -141,6 +171,7 @@ def analyze_words(
         mean_confidence=round(min(1.0, max(0.0, mean_confidence)), 4),
         garbage_ratio=round(garbage_ratio(text, cfg.languages, cfg.extra_chars), 4),
         nonword_ratio=round(nonword_ratio(words, cfg.languages), 4),
+        readable_share=round(readable_share(words, config), 4),
         text_density=round(min(1.0, density), 4),
         n_boxes=len(words),
     )
@@ -160,8 +191,11 @@ def unreadable_score(result: OCRResult, config: Config) -> Optional[float]:
         "mean_confidence": result.mean_confidence,
         "garbage_ratio": result.garbage_ratio,
         "nonword_ratio": result.nonword_ratio,
+        "readable_share": result.readable_share,
     }
     scores = [
-        score_from_anchors(signals[name], pair.good, pair.bad) for name, pair in anchors.items()
+        score_from_anchors(signals[name], pair.good, pair.bad)
+        for name, pair in anchors.items()
+        if name in signals
     ]
     return round(max(scores), 4)

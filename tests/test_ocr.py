@@ -89,13 +89,18 @@ def test_empty_page(config: Config) -> None:
 
 
 def make_result(
-    confidence: float, garbage: float, boxes: int = 50, nonword: float = 0.0
+    confidence: float,
+    garbage: float,
+    boxes: int = 50,
+    nonword: float = 0.0,
+    readable: float = 1.0,
 ) -> OCRResult:
     return OCRResult(
         engine="test",
         mean_confidence=confidence,
         garbage_ratio=garbage,
         nonword_ratio=nonword,
+        readable_share=readable,
         text_density=0.2,
         n_boxes=boxes,
     )
@@ -133,9 +138,28 @@ def test_nonword_signal_reaches_unreadable(config: Config) -> None:
     """Без этого сигнала уверенная белиберда с EasyOCR прошла бы как хороший скан."""
     clean = unreadable_score(make_result(0.90, 0.0, nonword=0.05), config)
     nonsense = unreadable_score(make_result(0.90, 0.0, nonword=0.60), config)
+    total = unreadable_score(make_result(0.90, 0.0, nonword=0.95), config)
 
     assert clean == 0.0
-    assert nonsense == 1.0
+    assert nonsense > clean
+    assert total == 1.0
+
+
+def test_local_damage_does_not_make_the_page_unreadable(config: Config) -> None:
+    """Печать поверх текста, подпись, штамп — локальные помехи.
+
+    Они делают нечитаемым свой участок, а не страницу. До появления
+    `readable_share` печать, испортившая треть слов, уводила скан в `bad`:
+    доля плохих токенов считалась по всей странице и объявлялась её свойством.
+    """
+    stamped = unreadable_score(make_result(0.88, 0.0, nonword=0.30, readable=0.75), config)
+    assert stamped < config.verdict.tau_unreadable
+
+
+def test_page_that_truly_cannot_be_read_is_flagged(config: Config) -> None:
+    """Обратная проверка: смягчение не должно обезвредить саму метку."""
+    ruined = unreadable_score(make_result(0.40, 0.0, nonword=0.70, readable=0.12), config)
+    assert ruined > config.verdict.tau_unreadable
 
 
 def test_good_scan_is_readable(config: Config) -> None:

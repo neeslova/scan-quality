@@ -44,6 +44,9 @@ class OCRResult(_Model):
     garbage_ratio: float = Field(ge=0.0, le=1.0)
     # Доля токенов, не похожих на слова: выживает при закрытом алфавите.
     nonword_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Доля площади текста, прочитанная уверенно и осмысленно. Устойчива к
+    # локальной помехе: печать поверх текста портит свой участок, а не страницу.
+    readable_share: float = Field(default=1.0, ge=0.0, le=1.0)
     text_density: float = Field(ge=0.0)
     n_boxes: int = Field(ge=0)
 

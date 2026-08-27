@@ -134,7 +134,7 @@ class OCRConfig(_Section):
 
     @model_validator(mode="after")
     def _check_signals(self) -> OCRConfig:
-        expected = {"mean_confidence", "garbage_ratio", "nonword_ratio"}
+        expected = {"mean_confidence", "garbage_ratio", "nonword_ratio", "readable_share"}
         if set(self.unreadable) != expected:
             raise ValueError(f"ocr.unreadable: нужны ровно {sorted(expected)}")
         return self

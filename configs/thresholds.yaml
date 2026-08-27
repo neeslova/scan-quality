@@ -10,11 +10,11 @@ verdict:
       good: 0.193
       bad: 0.836
     cropped:
-      good: -0.6957
-      bad: 1.7983
+      good: -0.6854
+      bad: 1.7743
     low_resolution:
-      good: -0.0294
-      bad: 1.5393
+      good: -0.1176
+      bad: 1.6471
     noise:
       good: -0.1161
       bad: 0.3836

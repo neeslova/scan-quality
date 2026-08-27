@@ -78,9 +78,56 @@ def streak_mask(gray: np.ndarray, smooth_frac: float = 0.02) -> np.ndarray:
     return mask
 
 
+def _without_rules(gray: np.ndarray) -> np.ndarray:
+    """Страница без структурных линий: рамок, линеек таблиц, подчёркиваний.
+
+    Без этого таблица гарантированно объявляется полосами. Профиль фона берёт
+    перцентиль по колонке, и вертикальная линейка таблицы — тёмная колонка во всю
+    высоту — для профиля неотличима от следа валика: тот же одиночный сильный
+    выброс. Скан с таблицей получал `streaks` и уходил в `bad`.
+
+    Разница между ними структурная, а не яркостная: линейка — это ровная линия
+    из чернил, а след валика — размазанное изменение фона, у которого чёткой
+    линии нет вовсе. Поэтому линии выделяются морфологическим открытием длинным
+    тонким ядром и заменяются уровнем бумаги: колонка после этого выглядит так,
+    как выглядела бы без таблицы.
+
+    Связные компоненты здесь не годятся, и это проверено: линейки таблицы сшиты
+    в одну решётку, её habitus — большой бокс по обеим осям, и правило «тонкая
+    и длинная» её не опознаёт. Открытие смотрит на форму локально и решётку
+    разбирает на составляющие линии.
+    """
+    from src.imaging import binarize_ink
+
+    ink = binarize_ink(gray) > 0
+    height, width = gray.shape
+    # Ядро длиной в пятую часть стороны: короче — начнёт цеплять строки текста,
+    # длиннее — пропустит линейки внутри таблицы.
+    horizontal = cv2.morphologyEx(
+        ink.astype(np.uint8),
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, width // 5), 1)),
+    )
+    vertical = cv2.morphologyEx(
+        ink.astype(np.uint8),
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, height // 5))),
+    )
+    rules = (horizontal | vertical) > 0
+    if not rules.any():
+        return gray.astype(np.float64)
+
+    # Расширяем на пару пикселей: у линии есть сглаженная кромка, и без запаса
+    # она остаётся в профиле полутоном.
+    thick = cv2.dilate(rules.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+    cleaned = gray.astype(np.float64).copy()
+    cleaned[thick] = float(np.median(gray[~thick])) if (~thick).any() else float(np.median(gray))
+    return cleaned
+
+
 def _background_profile(gray: np.ndarray, axis: int) -> np.ndarray:
     """Профиль фона вдоль оси: берём светлые перцентили, чтобы текст не мешал."""
-    return np.percentile(gray.astype(np.float64), 75.0, axis=axis)
+    return np.percentile(_without_rules(gray), 75.0, axis=axis)
 
 
 def streak_stats(gray: np.ndarray, smooth_frac: float = 0.02) -> StreakStats:

@@ -64,18 +64,37 @@ def test_config_rejects_unknown_key(config: Config) -> None:
 
 
 @pytest.mark.parametrize(
-    ("scores", "expected"),
+    ("where", "expected"),
     [
-        ({"blur": 0.1, "unreadable": 0.05}, "good"),
-        ({"blur": 0.45, "unreadable": 0.05}, "acceptable"),
-        ({"blur": 0.85, "unreadable": 0.05}, "bad"),
-        # unreadable бьёт по собственному, более низкому порогу
-        ({"blur": 0.01, "unreadable": 0.55}, "bad"),
-        ({}, "good"),
+        ("ниже tau_low", "good"),
+        ("между порогами", "acceptable"),
+        ("выше tau_high", "bad"),
+        ("пусто", "good"),
     ],
 )
-def test_decide_verdict(config: Config, scores: dict, expected: str) -> None:
+def test_decide_verdict(config: Config, where: str, expected: str) -> None:
+    """Проверяем ПРАВИЛО, а не конкретные числа порогов.
+
+    Пороги калибруются и меняются (0.30/0.60 -> 0.40/0.65 -> 0.45/0.70), и тест,
+    приколоченный к их значениям, ломается на каждой калибровке, ничего при этом
+    не проверяя по существу.
+    """
+    low, high = config.verdict.tau_low, config.verdict.tau_high
+    scores = {
+        "ниже tau_low": {"blur": low - 0.05},
+        "между порогами": {"blur": (low + high) / 2},
+        "выше tau_high": {"blur": high + 0.05},
+        "пусто": {},
+    }[where]
+
     assert decide_verdict(scores, config.verdict) == expected
+
+
+def test_unreadable_has_its_own_lower_threshold(config: Config) -> None:
+    """Метка нечитаемости бьёт по своему порогу: текст, который нельзя прочесть,
+    обесценивает скан сильнее любого другого дефекта (раздел 4)."""
+    scores = {"blur": 0.01, "unreadable": config.verdict.tau_unreadable + 0.05}
+    assert decide_verdict(scores, config.verdict) == "bad"
 
 
 def test_quality_score() -> None:
