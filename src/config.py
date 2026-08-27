@@ -208,9 +208,11 @@ class SynthConfig(_Section):
 
 class DatasetConfig(_Section):
     patches_per_page: int = Field(gt=0)
+    val_patches_per_page: int = Field(gt=0)
     min_ink_frac: float = Field(ge=0.0, lt=1.0)
     max_patch_attempts: int = Field(gt=0)
     min_mask_overlap: float = Field(ge=0.0, le=1.0)
+    min_mask_share: float = Field(ge=0.0, le=1.0)
     brightness: float = Field(ge=0.0, lt=1.0)
     contrast: float = Field(ge=0.0, lt=1.0)
     workers: int = Field(ge=0)
@@ -231,6 +233,7 @@ class TrainConfig(_Section):
     seed: int
     pos_weight: Union[str, list[float]] = "auto"
     pos_weight_max: float = Field(gt=0.0)
+    pos_weight_sample: int = Field(gt=0)
 
     @model_validator(mode="after")
     def _check_pos_weight(self) -> TrainConfig:
@@ -257,14 +260,14 @@ class VerdictConfig(_Section):
     def _check_order(self) -> VerdictConfig:
         if self.tau_low >= self.tau_high:
             raise ValueError(
-                f"verdict: требуется tau_low < tau_high, получено "
-                f"{self.tau_low} >= {self.tau_high}"
+                f"verdict: требуется tau_low < tau_high, получено {self.tau_low} >= {self.tau_high}"
             )
         return self
 
 
 class Config(_Section):
     labels: list[str]
+    ocr_derived: list[str] = Field(default_factory=list)
     paths: PathsConfig
     data: DataConfig
     cv: CVConfig
@@ -306,6 +309,10 @@ class Config(_Section):
         unknown_cv = sorted(set(self.cv.scores) - expected)
         if unknown_cv:
             raise ValueError(f"cv.scores: метки вне таксономии: {unknown_cv}")
+
+        unknown_ocr = sorted(set(self.ocr_derived) - expected)
+        if unknown_ocr:
+            raise ValueError(f"ocr_derived: метки вне таксономии: {unknown_ocr}")
 
         unknown_auto = sorted(set(self.labeling.auto_labels) - expected)
         if unknown_auto:

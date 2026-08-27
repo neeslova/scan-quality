@@ -13,7 +13,8 @@ from src.data.dataset import (
     _mask_for_patch,
     collect_real,
     collect_synthetic,
-    positive_weights,
+    page_positive_rates,
+    patch_label_dilution,
 )
 from src.data.generate import write_manifest
 from src.labeling.app import append_label
@@ -46,19 +47,38 @@ def write_mask(path, shape, region) -> None:
 
 def test_mask_overlap_scales_to_page() -> None:
     """Маска хранится уменьшенной — бокс патча надо приводить к её масштабу."""
-    mask = np.zeros((100, 100), dtype=np.uint8)
-    mask[:50, :] = 255  # верхняя половина
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[:50, :] = True  # верхняя половина
+    total = int(mask.sum())
 
-    full = _mask_for_patch(mask, (0, 0, 1000, 500), (1000, 1000))
-    empty = _mask_for_patch(mask, (0, 600, 1000, 1000), (1000, 1000))
+    full, _ = _mask_for_patch(mask, total, (0, 0, 1000, 500), (1000, 1000))
+    empty, _ = _mask_for_patch(mask, total, (0, 600, 1000, 1000), (1000, 1000))
 
     assert full == pytest.approx(1.0, abs=0.05)
     assert empty == pytest.approx(0.0, abs=0.05)
 
 
+def test_thin_defect_is_caught_by_the_second_share() -> None:
+    """Полоса во всю страницу не способна накрыть 15% квадрата 384x384.
+
+    Из-за этого `streaks` и `cropped` не получали метку почти никогда — 0.8% и
+    1.7% патчей замером, — и сеть двух дефектов из десяти не видела вовсе.
+    Ловит их вторая доля: сколько самого дефекта попало внутрь патча.
+    """
+    mask = np.zeros((1000, 1000), dtype=bool)
+    mask[:, 500:503] = True  # полоса в три пикселя во всю высоту
+    total = int(mask.sum())
+
+    coverage, share = _mask_for_patch(mask, total, (300, 300, 684, 684), (1000, 1000))
+
+    assert coverage < 0.15  # по доле патча метка не прошла бы
+    assert share > 0.02  # а по доле маски проходит
+
+
 def test_mask_overlap_on_degenerate_box() -> None:
-    mask = np.ones((10, 10), dtype=np.uint8) * 255
-    assert _mask_for_patch(mask, (0, 0, 1, 1), (1000, 1000)) >= 0.0
+    mask = np.ones((10, 10), dtype=bool)
+    coverage, share = _mask_for_patch(mask, int(mask.sum()), (0, 0, 1, 1), (1000, 1000))
+    assert coverage >= 0.0 and share >= 0.0
 
 
 # --- правило метки патча ----------------------------------------------------
@@ -137,10 +157,14 @@ def test_page_yields_all_its_patches_at_once(config: Config, page_file) -> None:
     assert tuple(target.shape) == (config.dataset.patches_per_page, config.n_labels)
 
 
-def test_validation_yields_one_patch_per_page(config: Config, page_file) -> None:
+def test_validation_takes_several_patches_per_page(config: Config, page_file) -> None:
+    """Вердикт по странице собирается максимумом по патчам, и одним патчем блик
+    в углу не поймать: локальные метки получали AP на уровне случайного угадывания."""
     sample = Sample(path=page_file, labels={}, masks={}, source="real")
     tensor, target = PatchDataset([sample], config, train=False)[0]
-    assert tensor.shape[0] == 1 and target.shape[0] == 1
+
+    expected = config.dataset.val_patches_per_page
+    assert tensor.shape[0] == expected and target.shape[0] == expected
 
 
 def test_flatten_merges_pages_and_patches(config: Config, page_file) -> None:
@@ -168,7 +192,8 @@ def test_tiny_page_is_upscaled_to_patch(config: Config, tmp_path) -> None:
 
     sample = Sample(path=path, labels={}, masks={}, source="real")
     tensor, _ = PatchDataset([sample], config, train=False)[0]
-    assert tuple(tensor.shape) == (1, 3, config.data.patch_size, config.data.patch_size)
+    patch = config.data.patch_size
+    assert tuple(tensor.shape) == (config.dataset.val_patches_per_page, 3, patch, patch)
 
 
 def test_validation_is_deterministic(config: Config, page_file) -> None:
@@ -228,17 +253,29 @@ def test_collect_real_filters_by_image(config: Config, tmp_path) -> None:
 # --- pos_weight -------------------------------------------------------------
 
 
-def test_positive_weights_reflect_imbalance(config: Config, tmp_path) -> None:
+def test_page_rate_reflects_imbalance(config: Config, tmp_path) -> None:
     samples = [
         Sample(path=tmp_path / "x.png", labels={"blur": i < 10}, masks={}, source="real")
         for i in range(100)
     ]
-    weights = positive_weights(samples, config.labels)
-    # 10 положительных из 100 -> отрицательных вдевятеро больше
-    assert weights[config.labels.index("blur")] == pytest.approx(9.0, abs=0.01)
+    rates = page_positive_rates(samples, config.labels)
+    assert rates[config.labels.index("blur")] == pytest.approx(0.10, abs=0.001)
 
 
-def test_label_without_examples_gets_weight_one(config: Config, tmp_path) -> None:
-    """Иначе деление на ноль, а учить всё равно нечему."""
+def test_label_without_examples_has_zero_rate(config: Config, tmp_path) -> None:
+    """Дальше по цепочке такая метка получает вес 1.0: учить всё равно нечему."""
     samples = [Sample(path=tmp_path / "x.png", labels={}, masks={}, source="real")]
-    assert set(positive_weights(samples, config.labels)) == {1.0}
+    assert set(page_positive_rates(samples, config.labels)) == {0.0}
+
+
+def test_unseen_label_keeps_the_page_estimate(config: Config, page_file) -> None:
+    """Метка, не попавшая в выборку, получает разбавление 1.0.
+
+    Иначе `unreadable` с тремя примерами на восемь тысяч страниц не попала бы
+    в выборку из четырёхсот, получила бы долю 0 и вес 1.0 вместо потолка —
+    то есть починка локальных меток сломала бы редкие.
+    """
+    samples = [Sample(path=page_file, labels={}, masks={}, source="real")] * 4
+    dataset = PatchDataset(samples, config, train=True)
+
+    assert set(patch_label_dilution(dataset, sample_pages=2, seed=1)) == {1.0}

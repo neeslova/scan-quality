@@ -62,19 +62,22 @@ def test_pos_weight_is_capped(tmp_path) -> None:
     была 0.52, а val-потеря 23.7 — почти целиком из этого веса.
     """
     from src.config import load_config
-    from src.data.dataset import Sample
+    from src.data.dataset import PatchDataset, Sample
     from src.models.train import pos_weight_tensor
+    from tests import factories as fx
 
     config = load_config()
+    path = tmp_path / "page.png"
+    fx.save(fx.text_page(width=400, height=520), path, dpi=300)
+
     # 3 положительных примера unreadable на 8000 страниц — как в реальном прогоне.
     samples = [
-        Sample(path=tmp_path / "x.png", labels={"unreadable": i < 3}, masks={}, source="real")
+        Sample(path=path, labels={"unreadable": i < 3}, masks={}, source="real")
         for i in range(8000)
     ]
+    weights = pos_weight_tensor(config, PatchDataset(samples, config, train=True), "cpu").numpy()
 
-    weights = pos_weight_tensor(config, samples, "cpu").numpy()
     position = config.labels.index("unreadable")
-
     assert weights[position] == pytest.approx(config.train.pos_weight_max)
     assert weights.max() <= config.train.pos_weight_max
 
@@ -130,6 +133,21 @@ def test_macro_skips_labels_without_examples() -> None:
     assert macro(metrics, "average_precision") == pytest.approx(0.9)
 
 
+def test_macro_skips_labels_that_come_from_ocr() -> None:
+    """`unreadable` в пайплайне приходит от OCR-слоя, а не от сети.
+
+    Голова общая и метку предсказывает, но отбирать по ней лучшую эпоху нельзя:
+    в train три примера на восемь тысяч страниц. В таблице метка показана
+    отдельно, в макро-среднее не входит.
+    """
+    metrics = [
+        LabelMetrics("blur", 0.8, 0.8, 0.8, 0.9, support=10),
+        LabelMetrics("unreadable", 0.1, 0.1, 0.1, 0.1, support=3),
+    ]
+    assert macro(metrics, "average_precision") == pytest.approx(0.5)
+    assert macro(metrics, "average_precision", ["unreadable"]) == pytest.approx(0.9)
+
+
 def test_macro_on_nothing_is_nan() -> None:
     metrics = [LabelMetrics("blur", 0.0, 0.0, 0.0, float("nan"), support=0)]
     assert np.isnan(macro(metrics, "f1"))
@@ -157,3 +175,131 @@ def test_summary_has_all_four_macros() -> None:
         "macro_precision",
         "macro_recall",
     }
+
+
+# --- агрегация патчей в страницу --------------------------------------------
+
+
+class _ConstantPatches:
+    """Модель-заглушка: отдаёт заранее заданные вероятности, по строке на патч."""
+
+    def __init__(self, probabilities) -> None:
+        import torch
+
+        probs = torch.tensor(probabilities, dtype=torch.float32).clamp(1e-6, 1 - 1e-6)
+        self.logits = torch.log(probs / (1 - probs))
+
+    def eval(self):
+        return self
+
+    def __call__(self, batch):
+        return self.logits
+
+
+def test_page_score_is_max_for_local_and_mean_for_global() -> None:
+    """Мерить надо страницу, а не патч — так же, как схлопывает приложение.
+
+    У реальной страницы масок нет, её метка достаётся всем патчам, и патч из
+    центра отвечал бы за блик в углу. Локальные метки получали от этого AP
+    на уровне своей доли в выборке, то есть уровень случайного угадывания.
+    """
+    import torch
+
+    from src.config import load_config
+    from src.models.evaluate import predict
+
+    config = load_config()
+    glare = config.labels.index("glare")  # локальная -> max
+    blur = config.labels.index("blur")  # глобальная -> mean
+
+    first = [0.0] * config.n_labels
+    second = [0.0] * config.n_labels
+    first[glare], second[glare] = 0.9, 0.1
+    first[blur], second[blur] = 0.9, 0.1
+
+    targets = torch.zeros(1, 2, config.n_labels)
+    targets[0, :, glare] = 1.0
+    loader = [(torch.zeros(1, 2, 1), targets)]
+
+    y_true, y_score = predict(_ConstantPatches([first, second]), loader, config)
+
+    assert y_score.shape == (1, config.n_labels)
+    assert y_score[0, glare] == pytest.approx(0.9, abs=1e-4)
+    assert y_score[0, blur] == pytest.approx(0.5, abs=1e-4)
+    # Истина у страницы одна на все патчи — максимум возвращает её без изменений.
+    assert y_true[0, glare] == pytest.approx(1.0)
+
+
+# --- загрузчики --------------------------------------------------------------
+
+
+def test_validation_batch_counts_patches_not_pages(tmp_path) -> None:
+    """Батч измеряется в страницах, а патчей со страницы на валидации больше.
+
+    Валидационный загрузчик остался бы с батчем в 32 страницы по 8 патчей —
+    256 патчей за проход вместо тридцати двух, молча и только на валидации.
+    """
+    import json
+    from argparse import Namespace
+
+    from src.config import load_config
+    from src.data.generate import write_manifest
+    from src.labeling.app import append_label
+    from src.models.train import build_loaders
+    from src.schema import LabelRecord, SyntheticRecord
+
+    config = load_config()
+    for name, images in (("train", ["t.jpg"]), ("val", ["v.jpg"]), ("test", [])):
+        payload = {"documents": [f"d_{name}"], "images": images}
+        (tmp_path / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    labels = tmp_path / "labels.jsonl"
+    for image, document in (("t.jpg", "d_train"), ("v.jpg", "d_val")):
+        append_label(
+            labels,
+            LabelRecord(image=image, document=document, corpus="t", labels={"blur": True}),
+        )
+
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(
+        [SyntheticRecord(image="s.jpg", reference="t.jpg", document="d_s", corpus="t", labels={})],
+        manifest,
+    )
+
+    args = Namespace(
+        splits=tmp_path,
+        labels=labels,
+        data=tmp_path,
+        manifest=manifest,
+        synthetic=tmp_path,
+        source="mixed",
+    )
+    train_loader, val_loader = build_loaders(args, config)
+
+    patches_in_train = train_loader.batch_size * config.dataset.patches_per_page
+    patches_in_val = val_loader.batch_size * config.dataset.val_patches_per_page
+
+    assert patches_in_train == config.train.batch_size
+    assert patches_in_val <= config.train.batch_size
+
+    # Дообучение на реальных: синтетика в набор не попадает вовсе.
+    only_real, _ = build_loaders(Namespace(**{**vars(args), "source": "real"}), config)
+    assert len(only_real.dataset.samples) == 1
+    assert {s.source for s in only_real.dataset.samples} == {"real"}
+    assert len(train_loader.dataset.samples) == 2  # синтетика + реальная
+
+
+def test_cosine_fits_the_epochs_actually_requested() -> None:
+    """По `config.train.epochs` график при `--epochs 10` прошёл бы треть цикла."""
+    from src.config import load_config
+    from src.models.model import build_model
+    from src.models.train import make_optimizer
+
+    config = load_config()
+    model = build_model(config.model.backbone, config.n_labels, pretrained=False)
+
+    _, scheduler = make_optimizer(model, config, epochs=10)
+    assert scheduler.T_max == 10
+
+    _, default = make_optimizer(model, config)
+    assert default.T_max == config.train.epochs

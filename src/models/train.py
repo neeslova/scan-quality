@@ -37,7 +37,8 @@ from src.data.dataset import (
     collect_synthetic,
     flatten_patches,
     load_split,
-    positive_weights,
+    page_positive_rates,
+    patch_label_dilution,
 )
 from src.models.evaluate import evaluate, format_table, summary
 from src.models.model import build_model, load_checkpoint, save_checkpoint
@@ -75,16 +76,27 @@ def build_loaders(args, config: Config):
 
     # Синтетику берём всю, кроме документов из val и test: её эталоны — страницы
     # всего корпуса, а сплит покрывает только размеченные три сотни.
-    synthetic = collect_synthetic(args.manifest, args.synthetic, val_docs | test_docs)
-    real_train = collect_real(args.labels, args.data, train_images)
+    synthetic = []
+    if args.source in ("mixed", "synthetic"):
+        if args.manifest is None or args.synthetic is None:
+            raise SystemExit("--manifest и --synthetic обязательны при source с синтетикой")
+        synthetic = collect_synthetic(args.manifest, args.synthetic, val_docs | test_docs)
+
+    real_train = []
+    if args.source in ("mixed", "real"):
+        real_train = collect_real(args.labels, args.data, train_images)
+
     real_val = collect_real(args.labels, args.data, val_images)
 
     logger.info(
-        "train: %d синтетики + %d реальных, val: %d реальных",
+        "train (%s): %d синтетики + %d реальных, val: %d реальных",
+        args.source,
         len(synthetic),
         len(real_train),
         len(real_val),
     )
+    if not synthetic and not real_train:
+        raise SystemExit(f"train пуст при source={args.source}")
     if not real_val:
         raise SystemExit("val пуст — обучение без валидации бессмысленно")
 
@@ -94,8 +106,11 @@ def build_loaders(args, config: Config):
     val_set = PatchDataset(real_val, config, train=False, seed=config.train.seed)
 
     # Батч теперь измеряется в СТРАНИЦАХ: датасет отдаёт все патчи страницы
-    # сразу, чтобы не декодировать её по разу на каждый патч.
+    # сразу, чтобы не декодировать её по разу на каждый патч. Пересчитывать надо
+    # и валидационный: патчей со страницы там вдвое больше, и батч в страницах
+    # молча раздул бы прогон до 256 патчей за проход.
     pages_per_batch = max(1, config.train.batch_size // config.dataset.patches_per_page)
+    val_pages_per_batch = max(1, config.train.batch_size // config.dataset.val_patches_per_page)
     # Воркеров не больше, чем ядер: в Colab их два, и лишние процессы только
     # мешают друг другу.
     workers = min(config.dataset.workers, os.cpu_count() or 1)
@@ -115,16 +130,22 @@ def build_loaders(args, config: Config):
         ),
         DataLoader(
             val_set,
-            batch_size=config.train.batch_size,
+            batch_size=val_pages_per_batch,
             shuffle=False,
             num_workers=workers,
             persistent_workers=workers > 0,
         ),
     )
-    return loaders, synthetic + real_train
+    return loaders
 
 
-def make_optimizer(model, config: Config):
+def make_optimizer(model, config: Config, epochs: Optional[int] = None):
+    """Оптимизатор и планировщик.
+
+    `epochs` — сколько эпох реально запрошено: косинус должен укладываться именно
+    в них. По `config.train.epochs` график при `--epochs 10` прошёл бы лишь треть
+    цикла, и lr к концу обучения остался бы почти стартовым.
+    """
     import torch
 
     if config.train.optimizer != "adamw":
@@ -132,7 +153,9 @@ def make_optimizer(model, config: Config):
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr)
 
     if config.train.scheduler == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.train.epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs or config.train.epochs
+        )
     elif config.train.scheduler == "none":
         scheduler = None
     else:
@@ -140,7 +163,7 @@ def make_optimizer(model, config: Config):
     return optimizer, scheduler
 
 
-def pos_weight_tensor(config: Config, samples, device: str):
+def pos_weight_tensor(config: Config, dataset, device: str):
     import torch
 
     if isinstance(config.train.pos_weight, list):
@@ -148,7 +171,30 @@ def pos_weight_tensor(config: Config, samples, device: str):
         if len(weights) != config.n_labels:
             raise SystemExit(f"train.pos_weight: нужно {config.n_labels} чисел")
     else:
-        weights = positive_weights(samples, config.labels)
+        # Дисбаланс считается по ПАТЧАМ, а не по страницам. Локальную метку патч
+        # получает, только если реально накрывает дефект, поэтому страничная доля
+        # умножается на измеренное разбавление: у `cropped` метку получают 7.5%
+        # патчей со страниц с этой меткой, и без поправки вес выходил вчетверо
+        # меньше нужного — ровно там, где метка и так редкая.
+        page_rate = page_positive_rates(dataset.samples, config.labels)
+        dilution = patch_label_dilution(dataset, config.train.pos_weight_sample, config.train.seed)
+        rate = page_rate * dilution
+
+        weights = np.ones(config.n_labels, dtype=np.float32)
+        for position, label in enumerate(config.labels):
+            if rate[position] <= 0.0:
+                logger.warning("Метка %s без единого примера — вес 1.0", label)
+                continue
+            weights[position] = (1.0 - rate[position]) / rate[position]
+
+        for label, share, diluted in zip(config.labels, page_rate, dilution):
+            if diluted < 0.9 and share > 0.0:
+                logger.info(
+                    "%s: страниц с меткой %.0f%%, но метку получают лишь %.0f%% их патчей",
+                    label,
+                    100.0 * share,
+                    100.0 * diluted,
+                )
 
     # Потолок обязателен: метка с тремя примерами на восемь тысяч страниц
     # получает вес 2686, и её слагаемое съедает всю функцию потерь.
@@ -156,8 +202,7 @@ def pos_weight_tensor(config: Config, samples, device: str):
     for label, before, after in zip(config.labels, weights, capped):
         if after < before:
             logger.warning(
-                "pos_weight[%s] урезан с %.0f до %.0f — примеров почти нет, "
-                "метка так не выучится",
+                "pos_weight[%s] урезан с %.0f до %.0f — примеров почти нет, метка так не выучится",
                 label,
                 before,
                 after,
@@ -231,18 +276,35 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--corpus", type=Path, action="append", default=None)
     parser.add_argument("--data", type=Path, required=True, help="корень корпуса реальных сканов")
-    parser.add_argument("--synthetic", type=Path, required=True, help="корень синтетики")
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--synthetic", type=Path, default=None, help="корень синтетики")
+    parser.add_argument("--manifest", type=Path, default=None)
+    parser.add_argument(
+        "--source",
+        default="mixed",
+        choices=("mixed", "real", "synthetic"),
+        help="что подавать в train: синтетика с реальными, только реальные, только синтетика",
+    )
     parser.add_argument("--labels", type=Path, required=True)
     parser.add_argument("--splits", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="куда писать чекпоинты и лог")
     parser.add_argument("--resume", default="auto", help="auto | путь к чекпоинту | none")
     parser.add_argument("--epochs", type=int, default=None, help="переопределить конфиг")
+    parser.add_argument("--lr", type=float, default=None, help="переопределить конфиг")
+    parser.add_argument(
+        "--init",
+        type=Path,
+        default=None,
+        help="взять ТОЛЬКО веса из чекпоинта: свежий оптимизатор, эпоха 0, best сброшен",
+    )
     parser.add_argument("--device", default=None, help="по умолчанию cuda, если доступна")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_config(args.config, args.corpus)
+    if args.lr is not None:
+        config = config.model_copy(
+            update={"train": config.train.model_copy(update={"lr": args.lr})}
+        )
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     epochs = args.epochs or config.train.epochs
 
@@ -254,7 +316,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    (train_loader, val_loader), train_samples = build_loaders(args, config)
+    train_loader, val_loader = build_loaders(args, config)
     model = build_model(
         config.model.backbone,
         config.n_labels,
@@ -262,9 +324,9 @@ def main() -> None:
         dropout=config.model.dropout,
     ).to(device)
 
-    optimizer, scheduler = make_optimizer(model, config)
+    optimizer, scheduler = make_optimizer(model, config, epochs)
     criterion = torch.nn.BCEWithLogitsLoss(
-        pos_weight=pos_weight_tensor(config, train_samples, device)
+        pos_weight=pos_weight_tensor(config, train_loader.dataset, device)
     )
 
     start_epoch = 0
@@ -284,14 +346,20 @@ def main() -> None:
         start_epoch = int(payload["epoch"]) + 1
         best = float(payload["best"])
         logger.info("Продолжаем с эпохи %d, лучший macro-AP %.4f", start_epoch, best)
+    elif args.init is not None:
+        # Дообучение: признаки берём, историю обучения — нет. Оптимизатор со своими
+        # моментами и `best` от прошлой задачи сюда не относятся, а `best` вдобавок
+        # мерился по патчам и с новой, страничной величиной несопоставим.
+        load_checkpoint(args.init, model, map_location=device)
+        logger.info("Веса из %s; оптимизатор, счётчик эпох и best — с нуля", args.init)
 
     config_dump = config.model_dump(mode="json", by_alias=True)
     for epoch in range(start_epoch, epochs):
         started = time.perf_counter()
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
         val_loss = validation_loss(model, val_loader, criterion, device)
-        metrics, _, _ = evaluate(model, val_loader, config.labels, device)
-        totals = summary(metrics)
+        metrics, _, _ = evaluate(model, val_loader, config, device)
+        totals = summary(metrics, config.ocr_derived)
         if scheduler is not None:
             scheduler.step()
 
@@ -328,9 +396,9 @@ def main() -> None:
             )
             print(f"  новый лучший macro-AP {best:.4f}", flush=True)
 
-    metrics, _, _ = evaluate(model, val_loader, config.labels, device)
+    metrics, _, _ = evaluate(model, val_loader, config, device)
     print("\nитог на val:", file=sys.stderr)
-    print(format_table(metrics))
+    print(format_table(metrics, config.ocr_derived))
 
 
 if __name__ == "__main__":
