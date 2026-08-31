@@ -207,9 +207,19 @@ class DeepSeekOCR:
             trust_remote_code=True,
             use_safetensors=True,
             _attn_implementation=attention,
+            # Без этих двух строк веса сначала материализуются на CPU в float32 —
+            # около 12 ГБ на трёхмиллиардной модели, — и бесплатный Colab с его
+            # 12.7 ГБ ОЗУ убивает сеанс раньше, чем что-либо попадёт на карту.
+            # `torch_dtype` грузит сразу в нужной точности, `low_cpu_mem_usage`
+            # льёт пошардово через meta-device, а не собирает копию целиком.
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
         )
         self._model = self._model.eval()
         if torch.cuda.is_available():
+            # `.to(dtype)` избыточен после `torch_dtype` и оставлен страховкой:
+            # визуальный энкодер собирается remote-кодом, и приводить его
+            # подмодули к типу `from_pretrained` обязан не при любой сборке.
             self._model = self._model.cuda().to(dtype)
 
     def read(self, image_path: Path, mode: str, output_dir: Path) -> str:

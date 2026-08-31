@@ -46,12 +46,16 @@ MARKDOWN_HARDWARE = """## 1. Железо и данные
 Важно, какая именно карта досталась. FlashAttention-2 требует Ampere и новее;
 на T4 (Turing) он не собирается, и модуль сам переключается на штатное внимание
 и float16. Ячейка ниже просто показывает, с чем предстоит работать.
+
+Смотрим и на **ОЗУ**, а не только на видеопамять: сеанс на бесплатном Colab
+убивает именно она. Карта тут не самое узкое место.
 """
 
 CODE_HARDWARE = """from google.colab import drive
 
 drive.mount('/content/drive')
 !nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+!free -g | head -2
 !ls /content/drive/MyDrive/scanq/
 """
 
@@ -61,6 +65,9 @@ MARKDOWN_INSTALL = """## 2. Установка
 remote-код. `flash-attn` ставится **только на Ampere+** — на T4 его сборка
 займёт двадцать минут и закончится ошибкой.
 
+`accelerate` здесь не декоративен: без него не работает `low_cpu_mem_usage`,
+которым веса льются пошардово, — а без этого сеанс умирает по ОЗУ (см. ниже).
+
 Клонируется **рабочая ветка**, не `main`: слой DeepSeek в `main` ещё не влит.
 Ячейка печатает последний коммит — если в нём нет ожидаемой работы, дальше идти
 незачем, прогон всё равно упадёт на импорте.
@@ -69,12 +76,13 @@ remote-код. `flash-attn` ставится **только на Ampere+** — �
 CODE_INSTALL = """!git clone -q -b BRANCH_NAME REPO_URL /content/scan-quality
 !git -C /content/scan-quality log -1 --oneline
 !ls /content/scan-quality/src/ocr/deepseek.py  # нет файла -> клонирована не та ветка
-!pip install -q transformers==4.46.3 tokenizers==0.20.3 einops addict easydict pymupdf
+!pip install -q transformers==4.46.3 tokenizers==0.20.3 accelerate einops addict easydict pymupdf
 
 import torch
 
 major = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0
-print('compute capability:', torch.cuda.get_device_capability() if torch.cuda.is_available() else 'CPU')
+cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else 'CPU'
+print('compute capability:', cap)
 
 if major >= 8:
     print('Ampere+: ставим flash-attn')
@@ -90,14 +98,28 @@ MARKDOWN_PROBE = """## 3. Проба на одной странице
 это надо **до** многочасового прогона, а не в его середине.
 
 Заодно первый запуск скачивает веса (несколько ГБ) — пусть это случится здесь.
+
+**Про ОЗУ.** У бесплатного Colab её 12.7 ГБ, и модель на три миллиарда
+параметров в float32 занимает почти столько же — сеанс погибал на загрузке,
+не дойдя до карты. Поэтому `load()` передаёт `torch_dtype` и
+`low_cpu_mem_usage`: веса приезжают сразу в float16 и пошардово. Видеопамяти
+T4 (15 ГБ) при этом хватает с запасом.
+
+Кэш весов направлен в Drive: при обрыве сеанса локальный диск Colab
+очищается, и без этого каждая перезагрузка стоила бы повторной выкачки
+нескольких гигабайт. Если в Drive тесно — строку с `HF_HOME` закомментировать.
 """
 
 CODE_PROBE = """%cd /content/scan-quality
-import logging, sys
+import os, logging, sys
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(message)s')
 
+# Ставится до первого импорта transformers, иначе huggingface_hub уже прочитал
+# путь. Закомментировать, если в Drive мало места.
+os.environ['HF_HOME'] = '/content/drive/MyDrive/scanq/hf'
+
 from pathlib import Path
-from src.ocr.deepseek import DeepSeekOCR, RESOLUTION_MODES, attention_implementation, model_dtype
+from src.ocr.deepseek import DeepSeekOCR, attention_implementation, model_dtype
 
 print('attention:', attention_implementation(), '| dtype:', model_dtype())
 
@@ -107,6 +129,9 @@ print('пробная страница:', sample.name)
 
 engine = DeepSeekOCR()
 text = engine.read(sample, 'tiny', Path('/content/work'))
+
+import torch
+print('видеопамять под весами: %.1f ГБ' % (torch.cuda.memory_allocated() / 2**30))
 print('символов:', len(text))
 print(text[:500])
 """

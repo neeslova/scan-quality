@@ -11,6 +11,7 @@ import json
 
 from src.ocr.deepseek import (
     RESOLUTION_MODES,
+    DeepSeekOCR,
     PageResult,
     collect_jobs,
     load_done,
@@ -100,3 +101,35 @@ def test_self_consistency_modes_differ_in_resolution() -> None:
     sizes = {RESOLUTION_MODES[mode][0] for mode in DEFAULT_MODES}
     assert len(DEFAULT_MODES) == 2
     assert len(sizes) == 2
+
+
+def test_load_asks_for_half_precision_and_sharded_weights(monkeypatch) -> None:
+    """Без `torch_dtype` веса материализуются на CPU в float32 — и сеанс умирает.
+
+    Три миллиарда параметров в float32 — почти 12 ГБ, а бесплатный Colab даёт
+    12.7 ГБ ОЗУ: загрузка убивает сеанс, не дойдя до карты. Это уже стоило
+    одного прогона. Проверяем на подставном `transformers`, потому что настоящая
+    модель требует CUDA, которой в тестовом окружении нет.
+    """
+    import sys
+    import types
+
+    import torch
+
+    captured: dict = {}
+
+    class _AutoModel:
+        @staticmethod
+        def from_pretrained(model_id: str, **kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(eval=lambda: "модель")
+
+    fake = types.ModuleType("transformers")
+    fake.AutoModel = _AutoModel
+    fake.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **k: "токенизатор")
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+
+    DeepSeekOCR().load()
+
+    assert captured["torch_dtype"] is torch.float16
+    assert captured["low_cpu_mem_usage"] is True
