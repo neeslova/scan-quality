@@ -75,6 +75,22 @@ def test_cyrillic_path(tmp_path) -> None:
     assert load_page(path, target_dpi=300).width == 400
 
 
+def test_gif_falls_back_to_pillow(tmp_path) -> None:
+    """opencv-python-headless собран без LZW и молча отдаёт None на gif.
+
+    В корпусе такой файл ровно один, и без запасного декодера он выпадал бы из
+    прогона незаметно — прогон бы не упал, просто страница исчезла бы из отчёта.
+    """
+    from PIL import Image
+
+    path = tmp_path / "скан.gif"
+    Image.fromarray(fx.text_page(width=400, height=500)).convert("P").save(path)
+
+    loaded = load_page(path, target_dpi=None)
+    assert (loaded.width, loaded.height) == (400, 500)
+    assert loaded.gray.dtype.name == "uint8"
+
+
 def test_unknown_format_rejected(tmp_path) -> None:
     path = tmp_path / "scan.docx"
     path.write_bytes(b"nope")

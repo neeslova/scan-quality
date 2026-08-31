@@ -16,7 +16,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"})
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".gif"})
 PDF_SUFFIXES = frozenset({".pdf"})
 
 # Длинная сторона A4 в дюймах — из неё выводим dpi, если метаданных нет.
@@ -42,6 +42,22 @@ class LoadedPage:
         return int(self.gray.shape[1])
 
 
+def _decode_with_pillow(path: Path) -> np.ndarray:
+    """Запасной декодер для форматов, которых нет в сборке OpenCV.
+
+    Нужен из-за GIF: opencv-python-headless собран без поддержки LZW, и
+    `cv2.imdecode` молча возвращает None на любом gif. Pillow его читает, и
+    ставить ради одного формата ещё одну библиотеку не пришлось — pillow уже
+    в базовых зависимостях ради чтения dpi из метаданных.
+    """
+    from PIL import Image
+
+    with Image.open(path) as image:
+        # Палитровые и анимированные gif приводим к первому кадру в градациях
+        # серого: скан — это страница, а не анимация.
+        return np.asarray(image.convert("L"), dtype=np.uint8)
+
+
 def _imread_unicode(path: Path) -> np.ndarray:
     """cv2.imread не открывает пути с кириллицей на Windows — читаем через numpy."""
     buffer = np.fromfile(str(path), dtype=np.uint8)
@@ -49,7 +65,10 @@ def _imread_unicode(path: Path) -> np.ndarray:
         raise ValueError(f"Пустой файл: {path}")
     image = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
     if image is None:
-        raise ValueError(f"Не удалось декодировать изображение: {path}")
+        try:
+            image = _decode_with_pillow(path)
+        except Exception as error:  # noqa: BLE001 — причина уточняется в сообщении ниже
+            raise ValueError(f"Не удалось декодировать изображение: {path} ({error})") from error
     return image
 
 
