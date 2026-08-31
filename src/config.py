@@ -261,6 +261,17 @@ class ExplainConfig(_Section):
     timeout_s: float = Field(gt=0.0)
 
 
+class JudgeConfig(_Section):
+    """VLM-судья. Выключен по умолчанию: наружу уходит изображение, не числа."""
+
+    enabled: bool = False
+    # Провайдер меняется одной строкой: список бэкендов — в src/judge/backends.py.
+    backend: str = "anthropic"
+    model: str = "claude-opus-5"
+    max_tokens: int = Field(gt=0, default=1000)
+    timeout_s: float = Field(gt=0.0, default=60.0)
+
+
 class CalibrateConfig(_Section):
     # Опорные точки шкалы метки. Намеренно отвязаны от verdict.tau_*: иначе
     # якоря строятся относительно порога, а порог подбирается по якорям — круг.
@@ -338,6 +349,7 @@ class Config(_Section):
     verdict: VerdictConfig
     calibrate: CalibrateConfig
     explain: ExplainConfig
+    judge: JudgeConfig = JudgeConfig()
 
     @property
     def ocr_derived(self) -> list[str]:
