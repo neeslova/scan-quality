@@ -1,0 +1,221 @@
+"""Генератор ноутбука `deepseek_ocr.ipynb`. Запускать локально после правок.
+
+Ноутбук держим сгенерированным, а не редактируем руками: в .ipynb ячейки лежат
+списком строк с метаданными, и ручная правка в редакторе даёт нечитаемый diff.
+Здесь же виден весь текст ноутбука подряд.
+
+    python notebooks/deepseek_ocr.py
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+REPO = "https://github.com/neeslova/scan-quality.git"
+# Слой DeepSeek живёт в рабочей ветке; в main его нет, и клон по умолчанию
+# приедет без `src/ocr/deepseek.py`. Ветку указываем явно.
+BRANCH = "s5-cv-vs-cnn"
+
+MARKDOWN_INTRO = """# DeepSeek-OCR: прогон корпуса (Colab)
+
+**Правило то же, что в `train.ipynb`: в ноутбуке нет логики.** Весь код — в
+`src/ocr/deepseek.py`, ноутбук только запускает.
+
+Что здесь происходит и почему именно так:
+
+* модель читает каждую страницу **дважды** — в низком и высоком разрешении.
+  Расхождение двух прочтений и есть главный сигнал этапа (self-consistency):
+  на плохом скане генеративная модель каждый раз выдумывает своё. Разметка для
+  этого не нужна, поэтому сигнал применим ко всему корпусу;
+* сохраняется **сырой текст**, а не метрики. Прогон стоит часов GPU, а формулы
+  сигналов ещё будут меняться — всё, что можно пересчитать локально, здесь не
+  считается;
+* прогон **переживает обрыв сессии**. Готовое адресуется по sha256 файла, при
+  повторном запуске уже посчитанное пропускается. Бесплатный Colab отключается
+  по таймауту, и это нормальный режим работы, а не авария.
+
+Перед запуском: Runtime → Change runtime type → **GPU**.
+
+Данные кладём в Drive (`MyDrive/scanq/`) папками корпусов. Результат ложится
+туда же, поэтому отключение сессии не теряет работу.
+"""
+
+MARKDOWN_HARDWARE = """## 1. Железо и данные
+
+Важно, какая именно карта досталась. FlashAttention-2 требует Ampere и новее;
+на T4 (Turing) он не собирается, и модуль сам переключается на штатное внимание
+и float16. Ячейка ниже просто показывает, с чем предстоит работать.
+"""
+
+CODE_HARDWARE = """from google.colab import drive
+
+drive.mount('/content/drive')
+!nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+!ls /content/drive/MyDrive/scanq/
+"""
+
+MARKDOWN_INSTALL = """## 2. Установка
+
+Версии зафиксированы карточкой модели: `transformers` новее 4.46.3 ломает её
+remote-код. `flash-attn` ставится **только на Ampere+** — на T4 его сборка
+займёт двадцать минут и закончится ошибкой.
+
+Клонируется **рабочая ветка**, не `main`: слой DeepSeek в `main` ещё не влит.
+Ячейка печатает последний коммит — если в нём нет ожидаемой работы, дальше идти
+незачем, прогон всё равно упадёт на импорте.
+"""
+
+CODE_INSTALL = """!git clone -q -b BRANCH_NAME REPO_URL /content/scan-quality
+!git -C /content/scan-quality log -1 --oneline
+!ls /content/scan-quality/src/ocr/deepseek.py  # нет файла -> клонирована не та ветка
+!pip install -q transformers==4.46.3 tokenizers==0.20.3 einops addict easydict pymupdf
+
+import torch
+
+major = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 0
+print('compute capability:', torch.cuda.get_device_capability() if torch.cuda.is_available() else 'CPU')
+
+if major >= 8:
+    print('Ampere+: ставим flash-attn')
+    !pip install -q flash-attn==2.7.3 --no-build-isolation
+else:
+    print('Turing или CPU: flash-attn пропускаем, пойдёт eager attention')
+"""
+
+MARKDOWN_PROBE = """## 3. Проба на одной странице
+
+Документация модели не описывает, что возвращает `infer`: строку с текстом или
+только запись в `output_path`. Модуль поддерживает оба варианта, но проверить
+это надо **до** многочасового прогона, а не в его середине.
+
+Заодно первый запуск скачивает веса (несколько ГБ) — пусть это случится здесь.
+"""
+
+CODE_PROBE = """%cd /content/scan-quality
+import logging, sys
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(message)s')
+
+from pathlib import Path
+from src.ocr.deepseek import DeepSeekOCR, RESOLUTION_MODES, attention_implementation, model_dtype
+
+print('attention:', attention_implementation(), '| dtype:', model_dtype())
+
+DATA = Path('/content/drive/MyDrive/scanq/Data iz tg')
+sample = sorted(p for p in (DATA / 'Good').glob('*') if p.suffix.lower() in {'.jpg', '.png'})[0]
+print('пробная страница:', sample.name)
+
+engine = DeepSeekOCR()
+text = engine.read(sample, 'tiny', Path('/content/work'))
+print('символов:', len(text))
+print(text[:500])
+"""
+
+MARKDOWN_BENCH = """## 4. Замер скорости
+
+Двадцать страниц, чтобы посчитать бюджет прогона по факту, а не по догадке.
+Умножьте `с/страница` из лога на размер корпуса — и станет видно, влезает ли
+полный прогон в сессию или его надо резать выборкой.
+
+Напомню объёмы: `Data iz tg` — 204 страницы, Tobacco3482 — 3482, Yenisei — 1802.
+Каждая читается дважды.
+"""
+
+CODE_BENCH = """from src.ocr.deepseek import run
+
+OUT = Path('/content/drive/MyDrive/scanq/deepseek_tg.jsonl')
+
+run(DATA, OUT, modes=('tiny', 'base'), limit=20, workdir=Path('/content/work'))
+"""
+
+MARKDOWN_FULL = """## 5. Полный прогон
+
+Ячейку можно перезапускать сколько угодно: посчитанное пропускается. Если
+сессия отвалилась — просто выполните её снова, прогон продолжится с места обрыва.
+
+Корпуса гоняем по одному, начиная со своего: он маленький и на нём быстрее
+станет ясно, что сигналы вообще работают.
+"""
+
+CODE_FULL = """run(DATA, OUT, modes=('tiny', 'base'), workdir=Path('/content/work'))
+
+# Следующие корпуса — по очереди, когда первый закрыт:
+# run(Path('/content/drive/MyDrive/scanq/tobacco3482'),
+#     Path('/content/drive/MyDrive/scanq/deepseek_tobacco.jsonl'),
+#     modes=('tiny', 'base'), workdir=Path('/content/work'))
+"""
+
+MARKDOWN_DONE = """## 6. Что дальше
+
+Файл `deepseek_*.jsonl` лежит в Drive. Скачиваем его локально в `data/labeled/`
+и считаем сигналы уже на своей машине — GPU для этого не нужен:
+
+```powershell
+python -m src.ocr.deepseek_signals --texts data/labeled/deepseek_tg.jsonl \\
+    --golden data/labeled/golden_tg.jsonl --out reports/deepseek_tg.md
+```
+"""
+
+CODE_SUMMARY = """import json, collections
+
+rows = [json.loads(line) for line in open(OUT, encoding='utf-8')]
+status = collections.Counter(r['status'] for r in rows)
+print('строк:', len(rows), dict(status))
+
+ok = [r for r in rows if r['status'] == 'ok']
+if ok:
+    for mode in ok[0]['elapsed_s']:
+        times = [r['elapsed_s'][mode] for r in ok if mode in r['elapsed_s']]
+        print(f'{mode}: {sum(times)/len(times):.1f} с/страница')
+    empty = sum(1 for r in ok if not any(t.strip() for t in r['texts'].values()))
+    print('пустых прочтений:', empty)
+"""
+
+
+def cell(kind: str, source: str) -> dict:
+    lines = source.strip("\n").split("\n")
+    payload = [line + "\n" for line in lines[:-1]] + [lines[-1]]
+    if kind == "markdown":
+        return {"cell_type": "markdown", "metadata": {}, "source": payload}
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": payload,
+    }
+
+
+def build() -> dict:
+    cells = [
+        cell("markdown", MARKDOWN_INTRO),
+        cell("markdown", MARKDOWN_HARDWARE),
+        cell("code", CODE_HARDWARE),
+        cell("markdown", MARKDOWN_INSTALL),
+        cell("code", CODE_INSTALL.replace("REPO_URL", REPO).replace("BRANCH_NAME", BRANCH)),
+        cell("markdown", MARKDOWN_PROBE),
+        cell("code", CODE_PROBE),
+        cell("markdown", MARKDOWN_BENCH),
+        cell("code", CODE_BENCH),
+        cell("markdown", MARKDOWN_FULL),
+        cell("code", CODE_FULL),
+        cell("code", CODE_SUMMARY),
+        cell("markdown", MARKDOWN_DONE),
+    ]
+    return {
+        "cells": cells,
+        "metadata": {
+            "accelerator": "GPU",
+            "colab": {"provenance": [], "gpuType": "T4"},
+            "kernelspec": {"display_name": "Python 3", "name": "python3"},
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 0,
+    }
+
+
+if __name__ == "__main__":
+    target = Path(__file__).with_suffix(".ipynb")
+    target.write_text(json.dumps(build(), ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"записан {target}")
