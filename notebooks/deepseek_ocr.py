@@ -88,6 +88,10 @@ else:
     ROOT = Path('/content/scanq')
 
 ROOT.mkdir(parents=True, exist_ok=True)
+# Пара режимов для self-consistency. `base` на T4 не влезает в видеопамять,
+# поэтому пара подбирается замером — см. раздел 3a.
+MODES = ('tiny', 'small')
+
 DATA = ROOT / 'Data iz tg'
 OUT = ROOT / 'deepseek_tg.jsonl'
 WORK = Path('/content/work')
@@ -236,7 +240,7 @@ MARKDOWN_MODES = """## 3a. Какие режимы влезают в карту
 
 CODE_MODES = """import torch
 
-for mode in ('tiny', 'small', 'base', 'gundam'):
+for mode in ('tiny', 'small', 'mid', 'tiles', 'base', 'gundam'):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     try:
@@ -259,7 +263,7 @@ MARKDOWN_BENCH = """## 4. Замер скорости
 
 CODE_BENCH = """from src.ocr.deepseek import run
 
-run(DATA, OUT, modes=('tiny', 'base'), limit=20, workdir=WORK)
+run(DATA, OUT, modes=MODES, limit=20, workdir=WORK)
 """
 
 MARKDOWN_FULL = """## 5. Полный прогон
@@ -271,11 +275,11 @@ MARKDOWN_FULL = """## 5. Полный прогон
 станет ясно, что сигналы вообще работают.
 """
 
-CODE_FULL = """run(DATA, OUT, modes=('tiny', 'base'), workdir=WORK)
+CODE_FULL = """run(DATA, OUT, modes=MODES, workdir=WORK)
 
 # Следующие корпуса — по очереди, когда первый закрыт:
 # run(ROOT / 'tobacco3482', ROOT / 'deepseek_tobacco.jsonl',
-#     modes=('tiny', 'base'), workdir=WORK)
+#     modes=MODES, workdir=WORK)
 """
 
 MARKDOWN_RESCUE = """## 6. Забрать результат
