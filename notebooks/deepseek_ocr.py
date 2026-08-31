@@ -253,6 +253,9 @@ for mode in ('tiny', 'small', 'mid', 'tiles', 'base', 'gundam'):
 
 MARKDOWN_BENCH = """## 4. Замер скорости
 
+Модель передаётся уже загруженной, из ячейки пробы. Иначе `run` создаст свою,
+и на карте окажутся две копии весов по 6.3 ГБ — T4 столько не держит.
+
 Двадцать страниц, чтобы посчитать бюджет прогона по факту, а не по догадке.
 Умножьте `с/страница` из лога на размер корпуса — и станет видно, влезает ли
 полный прогон в сессию или его надо резать выборкой.
@@ -263,7 +266,7 @@ MARKDOWN_BENCH = """## 4. Замер скорости
 
 CODE_BENCH = """from src.ocr.deepseek import run
 
-run(DATA, OUT, modes=MODES, limit=20, workdir=WORK)
+run(DATA, OUT, modes=MODES, limit=20, workdir=WORK, engine=engine)
 """
 
 MARKDOWN_FULL = """## 5. Полный прогон
@@ -275,11 +278,11 @@ MARKDOWN_FULL = """## 5. Полный прогон
 станет ясно, что сигналы вообще работают.
 """
 
-CODE_FULL = """run(DATA, OUT, modes=MODES, workdir=WORK)
+CODE_FULL = """run(DATA, OUT, modes=MODES, workdir=WORK, engine=engine)
 
 # Следующие корпуса — по очереди, когда первый закрыт:
 # run(ROOT / 'tobacco3482', ROOT / 'deepseek_tobacco.jsonl',
-#     modes=MODES, workdir=WORK)
+#     modes=MODES, workdir=WORK, engine=engine)
 """
 
 MARKDOWN_RESCUE = """## 6. Забрать результат

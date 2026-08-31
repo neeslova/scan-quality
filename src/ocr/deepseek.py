@@ -366,8 +366,16 @@ def run(
     modes: tuple[str, ...] = DEFAULT_MODES,
     limit: Optional[int] = None,
     workdir: Optional[Path] = None,
+    engine: Optional[DeepSeekOCR] = None,
 ) -> int:
-    """Читает корпус и дописывает результаты. Возвращает число обработанных страниц."""
+    """Читает корпус и дописывает результаты. Возвращает число обработанных страниц.
+
+    `engine` передают, когда модель уже загружена — например, после пробы в
+    ноутбуке. Без этого создаётся своя, и на карте оказываются **две** копии
+    весов по 6.3 ГБ: T4 столько не держит, загрузка падает с OOM, `_model`
+    остаётся пустым, и каждая следующая страница честно пробует загрузить снова.
+    Двадцать страниц — двадцать бесплодных загрузок и ни одного прочтения.
+    """
     for mode in modes:
         if mode not in RESOLUTION_MODES:
             raise SystemExit(f"Неизвестный режим {mode}; есть: {', '.join(RESOLUTION_MODES)}")
@@ -388,7 +396,7 @@ def run(
     if not pending:
         return 0
 
-    engine = DeepSeekOCR()
+    engine = engine or DeepSeekOCR()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     processed = 0
     started_all = time.perf_counter()
