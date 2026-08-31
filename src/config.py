@@ -252,15 +252,6 @@ class PathsConfig(_Section):
     onnx_model: Path
 
 
-class ExplainConfig(_Section):
-    """Внешний API как декоратор над готовым отчётом. По умолчанию выключен."""
-
-    enabled: bool = False
-    model: str
-    max_tokens: int = Field(gt=0)
-    timeout_s: float = Field(gt=0.0)
-
-
 class JudgeConfig(_Section):
     """VLM-судья. Выключен по умолчанию: наружу уходит изображение, не числа."""
 
@@ -365,7 +356,6 @@ class Config(_Section):
     train: TrainConfig
     verdict: VerdictConfig
     calibrate: CalibrateConfig
-    explain: ExplainConfig
     judge: JudgeConfig = JudgeConfig()
 
     @property

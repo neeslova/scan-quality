@@ -55,9 +55,9 @@ def _init_worker(config_path: Optional[str], overlays: Optional[list[str]]) -> N
     _WORKER_STATE["config"] = load_config(config_path, overlays)
 
 
-def _analyze_one(args: tuple[str, bool, bool]) -> list[str]:
+def _analyze_one(args: tuple[str, bool]) -> list[str]:
     """Один файл -> строки JSON по странице. Ошибка не роняет весь прогон."""
-    path_str, with_ocr, with_explain = args
+    path_str, with_ocr = args
     config: Config = _WORKER_STATE["config"]  # type: ignore[assignment]
 
     from src.pipeline import analyze_all_pages
@@ -68,11 +68,6 @@ def _analyze_one(args: tuple[str, bool, bool]) -> list[str]:
         logger.warning("%s: пропущен (%s)", path_str, error)
         return []
 
-    if with_explain:
-        # Декоратор над готовым отчётом: не удалось — отчёт остаётся прежним.
-        from src.explain import with_explanation
-
-        reports = [with_explanation(report, config) for report in reports]
     return [report.to_json(indent=None) for report in reports]
 
 
@@ -115,10 +110,9 @@ def process(
     with_ocr: bool,
     config_path: Optional[Path],
     overlays: Optional[list[Path]],
-    with_explain: bool = False,
 ):
     """Отчёты по всем файлам. Пул процессов, потому что работа упирается в CPU."""
-    payload = [(str(path), with_ocr, with_explain) for path in paths]
+    payload = [(str(path), with_ocr) for path in paths]
 
     if workers <= 1:
         _init_worker(str(config_path) if config_path else None, None)
@@ -153,12 +147,6 @@ def main() -> None:
     parser.add_argument("--corpus", type=Path, action="append", default=None)
     parser.add_argument("--workers", type=int, default=1, help="процессов; 1 — без пула")
     parser.add_argument("--with-ocr", action="store_true", help="считать unreadable (медленно)")
-    parser.add_argument(
-        "--explain",
-        action="store_true",
-        help="текстовое пояснение через внешний API — ОДИН ЗАПРОС НА СТРАНИЦУ; "
-        "без сети или без пакета отчёты выйдут просто без пояснений",
-    )
     parser.add_argument("--limit", type=int, default=None, help="взять только первые N файлов")
     args = parser.parse_args()
 
@@ -192,7 +180,6 @@ def main() -> None:
             args.with_ocr,
             args.config,
             args.corpus,
-            args.explain,
         ):
             pages += 1
             counts[report.verdict] = counts.get(report.verdict, 0) + 1

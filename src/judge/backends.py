@@ -94,7 +94,7 @@ def extract_json(text: str) -> str:
 
 
 class AnthropicBackend:
-    """Claude. Пакет `anthropic` ставится вместе с extra `explain`."""
+    """Claude. Пакет `anthropic` ставится вместе с extra `judge`."""
 
     name = "anthropic"
 
@@ -110,7 +110,7 @@ class AnthropicBackend:
                 import anthropic
             except ModuleNotFoundError as exc:  # pragma: no cover — зависит от окружения
                 raise BackendError(
-                    'Пакет anthropic не установлен: pip install -e ".[explain]"'
+                    'Пакет anthropic не установлен: pip install -e ".[judge]"'
                 ) from exc
             self._client = anthropic.Anthropic(timeout=self._timeout_s)
         return self._client

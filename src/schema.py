@@ -72,6 +72,10 @@ class QualityReport(_Model):
     ocr: Optional[OCRResult] = None
 
     heatmap_path: Optional[str] = None
+    # Осталось от текстового пояснения через внешний API, убранного 31.08.2026:
+    # его никто не заполняет. Поле оставлено потому, что модель запрещает лишние
+    # ключи (`extra="forbid"`), и без него перестали бы читаться уже записанные
+    # отчёты — а на них держатся калибровка якорей и обучение сведения.
     explanation: Optional[str] = None
     elapsed_ms: float = Field(default=0.0, ge=0.0)
 

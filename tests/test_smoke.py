@@ -221,15 +221,13 @@ def test_analyze_missing_file(config: Config, tmp_path) -> None:
 
 
 def test_app_handler(config: Config, scan: str) -> None:
-    """Хендлер Gradio отдаёт четыре выхода и не требует самой Gradio."""
+    """Хендлер Gradio отдаёт свои выходы и не требует самой Gradio."""
     from src.app import _run
 
-    verdict, defects, metrics, payload, page, shown, text = _run(None, False, config)
-    assert (defects, metrics, payload, page, text) == ({}, [], {}, None, "")
+    verdict, defects, metrics, payload, page, shown = _run(None, False, config)
+    assert (defects, metrics, payload, page) == ({}, [], {}, None)
 
-    verdict, defects, metrics, payload, page, shown, text = _run(scan, False, config)
-    # Пояснение выключено по умолчанию: система обязана работать без сети.
-    assert text == ""
+    verdict, defects, metrics, payload, page, shown = _run(scan, False, config)
     assert payload["verdict"] in {"good", "acceptable", "bad"}
     # Модели в этом конфиге нет: приходят ровно метки CV-слоя, не все, что он
     # умеет считать. `low_contrast` и `noise` отданы сети (решение №40).
