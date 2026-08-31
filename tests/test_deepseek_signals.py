@@ -6,6 +6,8 @@ import json
 
 from src.data.golden import write_golden
 from src.ocr.deepseek_signals import (
+    DEFAULT_EXTRA_CHARS,
+    DEFAULT_LANGUAGES,
     collect,
     format_report,
     join_with_golden,
@@ -130,3 +132,27 @@ def test_load_texts_skips_broken_lines(tmp_path) -> None:
     )
 
     assert len(load_texts(path)) == 1
+
+
+def test_markdown_markup_is_not_mistaken_for_a_foreign_alphabet() -> None:
+    """Таблица markdown не должна поднимать долю чужого алфавита.
+
+    DeepSeek-OCR возвращает разметку даже на промпт `Free OCR`, и `|` по
+    категории Unicode — математический символ, а не пунктуация. Без этого
+    сигнал зависел бы от того, нарисовала ли модель таблицу, то есть от режима
+    чтения, а не от качества скана.
+    """
+    from src.ocr.signals import foreign_char_ratio
+
+    table = "| Слово | Перевод |\n|---|---|\n| дом | house |\n\n**Итог:** `ok`"
+
+    assert foreign_char_ratio(table, DEFAULT_LANGUAGES, DEFAULT_EXTRA_CHARS) == 0.0
+
+
+def test_foreign_alphabet_still_catches_a_wrong_script() -> None:
+    """Послабление для разметки не должно ослепить сам сигнал."""
+    from src.ocr.signals import foreign_char_ratio
+
+    mixed = "| Слово | 文書 |"
+
+    assert foreign_char_ratio(mixed, DEFAULT_LANGUAGES, DEFAULT_EXTRA_CHARS) > 0.1
