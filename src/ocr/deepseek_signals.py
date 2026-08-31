@@ -25,9 +25,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -71,18 +72,59 @@ class PageSignals:
     status: str
 
 
-def load_texts(path: Path) -> list[dict]:
-    """Читает выгрузку прогона. Битые строки пропускаются с предупреждением."""
-    rows: list[dict] = []
-    with Path(path).open(encoding="utf-8") as fh:
-        for number, line in enumerate(fh, start=1):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                logger.warning("строка %d повреждена, пропущена", number)
-    return rows
+def load_texts(paths: Union[Path, Sequence[Path]]) -> list[dict]:
+    """Читает выгрузки прогона. Битые строки пропускаются с предупреждением.
+
+    Файлов можно передать несколько, и тогда они сливаются по ключу
+    `sha256#page`. Это нужно, чтобы режимы можно было добирать по одному:
+    прогон дорогой, бесплатная сессия Colab короткая, и сначала имеет смысл
+    прочитать весь корпус дешёвым режимом — три сигнала из четырёх считаются
+    по одному прочтению, — а второй режим добрать отдельным заходом, когда
+    станет ясно, что первые цифры того стоят.
+
+    Текст режима берётся из первого файла, где он непустой: страница, упавшая
+    в одном заходе и прочитанная в другом, не должна остаться пустой. Страница
+    считается прочитанной, если у неё есть хоть один текст.
+    """
+    if isinstance(paths, (str, Path)):
+        paths = [Path(paths)]
+
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+
+    for path in paths:
+        with Path(path).open(encoding="utf-8") as fh:
+            for number, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("%s, строка %d повреждена, пропущена", Path(path).name, number)
+                    continue
+
+                key = f"{row.get('sha256', '')}#{row.get('page', 0)}"
+                target = merged.get(key)
+                if target is None:
+                    target = dict(row)
+                    target["texts"] = dict(row.get("texts") or {})
+                    target["elapsed_s"] = dict(row.get("elapsed_s") or {})
+                    merged[key] = target
+                    order.append(key)
+                    continue
+
+                for mode, text in (row.get("texts") or {}).items():
+                    if text and not target["texts"].get(mode):
+                        target["texts"][mode] = text
+                        target["elapsed_s"][mode] = (row.get("elapsed_s") or {}).get(mode)
+                if not row.get("error"):
+                    target["error"] = target.get("error", "")
+
+    for row in merged.values():
+        row["status"] = "ok" if any(row["texts"].values()) else row.get("status", "failed")
+        row["elapsed_s"] = {k: v for k, v in row["elapsed_s"].items() if v is not None}
+
+    return [merged[key] for key in order]
 
 
 def load_vocabulary(path: Optional[Path]) -> Optional[set[str]]:
@@ -237,7 +279,13 @@ def format_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--texts", type=Path, required=True, help="выгрузка src.ocr.deepseek")
+    parser.add_argument(
+        "--texts",
+        type=Path,
+        required=True,
+        nargs="+",
+        help="выгрузки src.ocr.deepseek; несколько файлов сливаются по sha256#page",
+    )
     parser.add_argument("--golden", type=Path, required=True, help="эталон good/bad")
     parser.add_argument("--vocabulary", type=Path, default=None, help="словарь для oov, по слову")
     parser.add_argument("--languages", default=",".join(DEFAULT_LANGUAGES))

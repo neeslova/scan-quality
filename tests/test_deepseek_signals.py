@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from src.data.golden import write_golden
 from src.ocr.deepseek_signals import (
@@ -156,3 +157,47 @@ def test_foreign_alphabet_still_catches_a_wrong_script() -> None:
     mixed = "| Слово | 文書 |"
 
     assert foreign_char_ratio(mixed, DEFAULT_LANGUAGES, DEFAULT_EXTRA_CHARS) > 0.1
+
+
+def _write(path: Path, rows: list) -> Path:
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    return path
+
+
+def test_two_runs_merge_into_one_page(tmp_path) -> None:
+    """Режимы добираются по одному: сначала дешёвый, потом дорогой.
+
+    Прогон стоит часов GPU, а бесплатная сессия коротка. Прочитать весь корпус
+    одним режимом и добрать второй отдельным заходом — единственный способ
+    получить первые цифры, не дожидаясь конца всего.
+    """
+    first = _write(tmp_path / "tiny.jsonl", [_row("aa", "низкое", "")])
+    second = _write(tmp_path / "base.jsonl", [_row("aa", "", "высокое")])
+
+    rows = load_texts([first, second])
+
+    assert len(rows) == 1
+    assert rows[0]["texts"]["tiny"] == "низкое"
+    assert rows[0]["texts"]["base"] == "высокое"
+    assert rows[0]["status"] == "ok"
+
+    # И главное: слитая страница даёт тот самый сигнал расхождения.
+    assert "divergence" in page_signals(rows[0]).values
+
+
+def test_merge_recovers_a_page_that_failed_in_one_run(tmp_path) -> None:
+    """Упавшая страница не остаётся пустой, если другой заход её прочёл."""
+    broken = _write(tmp_path / "a.jsonl", [_row("bb", "", "", status="failed")])
+    good = _write(tmp_path / "b.jsonl", [_row("bb", "прочтение", "")])
+
+    rows = load_texts([broken, good])
+
+    assert rows[0]["texts"]["tiny"] == "прочтение"
+    assert rows[0]["status"] == "ok"
+
+
+def test_single_path_still_works(tmp_path) -> None:
+    """Один файл передаётся как раньше, без списка."""
+    path = _write(tmp_path / "one.jsonl", [_row("cc", "низкое", "высокое")])
+
+    assert len(load_texts(path)) == 1
