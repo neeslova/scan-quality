@@ -120,18 +120,20 @@ MARKDOWN_PROBE = """## 3. Проба на одной странице
 `low_cpu_mem_usage`: веса приезжают сразу в float16 и пошардово. Видеопамяти
 T4 (15 ГБ) при этом хватает с запасом.
 
-Кэш весов направлен в Drive: при обрыве сеанса локальный диск Colab
-очищается, и без этого каждая перезагрузка стоила бы повторной выкачки
-нескольких гигабайт. Если в Drive тесно — строку с `HF_HOME` закомментировать.
+**Веса остаются на диске Colab и в Drive не уводятся.** Их 6.7 ГБ, а
+бесплатный Drive — 15 ГБ на всё, вместе с корпусами; попытка сложить их туда
+упирается в квоту и оставляет обрезанный файл. Кэшировать их там и незачем:
+качаются они чуть больше минуты (116 МБ/с), а чтение из Drive через FUSE
+медленнее локального диска. Диск Colab переживает падение ядра и теряется
+только при удалении среды.
+
+В Drive держим ровно то, что дорого потерять: корпуса и `deepseek_*.jsonl`
+с результатами.
 """
 
 CODE_PROBE = """%cd /content/scan-quality
-import os, logging, sys
+import logging, sys
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(levelname)s %(message)s')
-
-# Ставится до первого импорта transformers, иначе huggingface_hub уже прочитал
-# путь. Закомментировать, если в Drive мало места.
-os.environ['HF_HOME'] = '/content/drive/MyDrive/scanq/hf'
 
 from pathlib import Path
 from src.ocr.deepseek import DeepSeekOCR, attention_implementation, model_dtype
