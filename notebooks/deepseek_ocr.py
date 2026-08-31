@@ -42,11 +42,13 @@ MARKDOWN_INTRO = """# DeepSeek-OCR: прогон корпуса (Colab)
 браузера, а не в клоне. Если фикс касается ноутбука — закройте вкладку и
 откройте ссылку заново, иначе будете выполнять старый код поверх нового `src`.
 
-Данные кладём в Drive (`MyDrive/scanq/`) папками корпусов. Результат ложится
-туда же, поэтому отключение сессии не теряет работу.
+Где лежат данные и результат — решается в первой ячейке флагом `USE_DRIVE`.
+По умолчанию всё на диске Colab: Drive делит 15 ГБ с почтой и фото, и при
+переполнении аккаунта Colab начинает показывать баннер о квоте, а запись
+отказывает.
 """
 
-MARKDOWN_HARDWARE = """## 1. Железо и данные
+MARKDOWN_HARDWARE = """## 1. Железо и пути
 
 Важно, какая именно карта досталась. FlashAttention-2 требует Ampere и новее;
 на T4 (Turing) он не собирается, и модуль сам переключается на штатное внимание.
@@ -58,14 +60,54 @@ bfloat16, и на T4 он идёт через эмуляцию. Это медл�
 
 Смотрим и на **ОЗУ**, а не только на видеопамять: сеанс на бесплатном Colab
 убивает именно она. Карта тут не самое узкое место.
+
+Здесь же решается, где живут данные и результат. **Drive не обязателен.** Он
+переживает удаление среды, но делит 15 ГБ квоты с Gmail и Google Фото, и когда
+аккаунт за квотой, Colab показывает баннер, а запись отказывает — кодом это не
+обходится. Локальный диск Colab даёт 113 ГБ без квот и переживает падение ядра;
+теряется он только вместе со средой. По умолчанию работаем на нём.
 """
 
-CODE_HARDWARE = """from google.colab import drive
+CODE_HARDWARE = """from pathlib import Path
 
-drive.mount('/content/drive')
+# True — данные и результат в Drive (переживает удаление среды, но упирается
+# в квоту аккаунта). False — локальный диск Colab: 113 ГБ, никаких квот и
+# никакого баннера, но всё исчезает вместе со средой.
+USE_DRIVE = False
+
+if USE_DRIVE:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    ROOT = Path('/content/drive/MyDrive/scanq')
+else:
+    ROOT = Path('/content/scanq')
+
+ROOT.mkdir(parents=True, exist_ok=True)
+DATA = ROOT / 'Data iz tg'
+OUT = ROOT / 'deepseek_tg.jsonl'
+WORK = Path('/content/work')
+print('корпус:', DATA)
+print('результат:', OUT)
+
 !nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
 !free -g | head -2
-!ls /content/drive/MyDrive/scanq/
+!df -h /content | tail -1
+"""
+
+MARKDOWN_DATA = """## 1a. Корпус на диск
+
+Нужна только при `USE_DRIVE = False`. Перетащите архив `Data iz tg.zip` в
+файловый браузер слева, в папку `/content`, и выполните ячейку — 146 МБ
+заливаются за пару минут. Повторный запуск ничего не делает: корпус уже на месте.
+
+Внутри архива должна лежать сама папка `Data iz tg` с `Good/` и `bad/`.
+"""
+
+CODE_DATA = """if not DATA.is_dir():
+    !unzip -q '/content/Data iz tg.zip' -d {ROOT}
+
+pages = [p for p in DATA.rglob('*') if p.is_file()]
+print('файлов в корпусе:', len(pages))
 """
 
 MARKDOWN_INSTALL = """## 2. Установка
@@ -149,12 +191,11 @@ from src.ocr.deepseek import DeepSeekOCR, attention_implementation, model_dtype
 
 print('attention:', attention_implementation(), '| dtype:', model_dtype())
 
-DATA = Path('/content/drive/MyDrive/scanq/Data iz tg')
 sample = sorted(p for p in (DATA / 'Good').glob('*') if p.suffix.lower() in {'.jpg', '.png'})[0]
 print('пробная страница:', sample.name)
 
 engine = DeepSeekOCR()
-text = engine.read(sample, 'tiny', Path('/content/work'))
+text = engine.read(sample, 'tiny', WORK)
 
 import torch
 print('видеопамять под весами: %.1f ГБ' % (torch.cuda.memory_allocated() / 2**30))
@@ -174,9 +215,7 @@ MARKDOWN_BENCH = """## 4. Замер скорости
 
 CODE_BENCH = """from src.ocr.deepseek import run
 
-OUT = Path('/content/drive/MyDrive/scanq/deepseek_tg.jsonl')
-
-run(DATA, OUT, modes=('tiny', 'base'), limit=20, workdir=Path('/content/work'))
+run(DATA, OUT, modes=('tiny', 'base'), limit=20, workdir=WORK)
 """
 
 MARKDOWN_FULL = """## 5. Полный прогон
@@ -188,18 +227,32 @@ MARKDOWN_FULL = """## 5. Полный прогон
 станет ясно, что сигналы вообще работают.
 """
 
-CODE_FULL = """run(DATA, OUT, modes=('tiny', 'base'), workdir=Path('/content/work'))
+CODE_FULL = """run(DATA, OUT, modes=('tiny', 'base'), workdir=WORK)
 
 # Следующие корпуса — по очереди, когда первый закрыт:
-# run(Path('/content/drive/MyDrive/scanq/tobacco3482'),
-#     Path('/content/drive/MyDrive/scanq/deepseek_tobacco.jsonl'),
-#     modes=('tiny', 'base'), workdir=Path('/content/work'))
+# run(ROOT / 'tobacco3482', ROOT / 'deepseek_tobacco.jsonl',
+#     modes=('tiny', 'base'), workdir=WORK)
 """
 
-MARKDOWN_DONE = """## 6. Что дальше
+MARKDOWN_RESCUE = """## 6. Забрать результат
 
-Файл `deepseek_*.jsonl` лежит в Drive. Скачиваем его локально в `data/labeled/`
-и считаем сигналы уже на своей машине — GPU для этого не нужен:
+При `USE_DRIVE = False` файл лежит на диске Colab и исчезнет вместе со средой.
+Забирайте его **до** конца работы, а на длинном прогоне — время от времени.
+
+Докатка от этого не страдает: чтобы продолжить после обрыва, залейте jsonl
+обратно в `/content/scanq/` рядом с корпусом. Готовое адресуется по sha256, и
+уже прочитанные страницы будут пропущены.
+"""
+
+CODE_RESCUE = """if not USE_DRIVE:
+    from google.colab import files
+    files.download(str(OUT))
+"""
+
+MARKDOWN_DONE = """## 7. Что дальше
+
+Скачанный `deepseek_*.jsonl` кладём локально в `data/labeled/` и считаем сигналы
+на своей машине — GPU для этого не нужен:
 
 ```powershell
 python -m src.ocr.deepseek_signals --texts data/labeled/deepseek_tg.jsonl \\
@@ -242,6 +295,8 @@ def build() -> dict:
         cell("markdown", MARKDOWN_INTRO),
         cell("markdown", MARKDOWN_HARDWARE),
         cell("code", CODE_HARDWARE),
+        cell("markdown", MARKDOWN_DATA),
+        cell("code", CODE_DATA),
         cell("markdown", MARKDOWN_INSTALL),
         cell("code", CODE_INSTALL.replace("REPO_URL", REPO).replace("BRANCH_NAME", BRANCH)),
         cell("markdown", MARKDOWN_PROBE),
@@ -251,6 +306,8 @@ def build() -> dict:
         cell("markdown", MARKDOWN_FULL),
         cell("code", CODE_FULL),
         cell("code", CODE_SUMMARY),
+        cell("markdown", MARKDOWN_RESCUE),
+        cell("code", CODE_RESCUE),
         cell("markdown", MARKDOWN_DONE),
     ]
     return {
