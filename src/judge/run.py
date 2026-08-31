@@ -170,7 +170,7 @@ def main() -> None:
         raise SystemExit("judge.enabled = false — включите судью в конфиге корпуса")
 
     from src.data.golden import file_sha256
-    from src.ocr.deepseek import collect_jobs
+    from src.ocr.deepseek import plan_jobs
 
     few_shot = args.few_shot.read_text(encoding="utf-8") if args.few_shot else None
     prompt = build_prompt(config, few_shot)
@@ -178,7 +178,11 @@ def main() -> None:
         config.judge.backend, config.judge.model, config.judge.max_tokens, config.judge.timeout_s
     )
 
-    jobs = collect_jobs(args.data)
+    # Перемешанный порядок, а не алфавитный: корпус разложен по папкам классов,
+    # и `--limit` по алфавиту отдал бы одни только `Good`. Судья платный, и
+    # выборка из одного класса — это выброшенные деньги: метрику по ней не
+    # посчитать вовсе.
+    jobs = plan_jobs(args.data)
     done = load_done(args.out)
     pending = [job for job in jobs if job.key not in done]
 
