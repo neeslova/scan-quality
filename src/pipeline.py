@@ -33,17 +33,30 @@ from src.schema import DefectScore, QualityReport, Verdict
 logger = logging.getLogger(__name__)
 
 
+def deciding_scores(scores: Mapping[str, float], cfg: VerdictConfig) -> dict[str, float]:
+    """Скоры, участвующие в вердикте: всё, кроме перечисленного в `verdict.ignore`.
+
+    Отброшенные метки остаются в отчёте — они посчитаны и видны. Не участвуют
+    они только в решении: правило «хоть одна метка выше порога» устроено так,
+    что одна вырожденная метка объявляет браком весь корпус. На `Data iz tg`
+    ровно это делает `low_resolution` — медиана `line_height_px` у хороших и
+    плохих страниц одинакова, 12 пикселей, и метка кричит на всех подряд.
+    """
+    return {label: value for label, value in scores.items() if label not in cfg.ignore}
+
+
 def decide_verdict(scores: Mapping[str, float], cfg: VerdictConfig) -> Verdict:
     """Правило вердикта из PLAN.md §4.
 
     Асимметрия намеренная: пропустить плохой скан дороже, чем отклонить хороший,
     поэтому `unreadable` имеет собственный, более низкий порог.
     """
-    if scores.get("unreadable", 0.0) > cfg.tau_unreadable:
+    deciding = deciding_scores(scores, cfg)
+    if deciding.get("unreadable", 0.0) > cfg.tau_unreadable:
         return "bad"
-    if any(score > cfg.tau_high for score in scores.values()):
+    if any(score > cfg.tau_high for score in deciding.values()):
         return "bad"
-    if any(score > cfg.tau_low for score in scores.values()):
+    if any(score > cfg.tau_low for score in deciding.values()):
         return "acceptable"
     return "good"
 
@@ -70,11 +83,17 @@ def apply_anchors(scores: Mapping[str, float], config: Config) -> dict[str, floa
     }
 
 
-def quality_score(scores: Mapping[str, float]) -> float:
-    """Сводный балл 0..1: 1 — идеальный скан. Пока просто «один минус худший дефект»."""
-    if not scores:
+def quality_score(scores: Mapping[str, float], cfg: Optional[VerdictConfig] = None) -> float:
+    """Сводный балл 0..1: 1 — идеальный скан. «Один минус худший дефект».
+
+    Считается по тем же меткам, что решают вердикт: метка, исключённая из
+    решения, не должна тайком возвращаться через сводный балл — по нему строится
+    ранжирование и ROC-AUC, и вырожденная метка обнулила бы шкалу и там.
+    """
+    deciding = deciding_scores(scores, cfg) if cfg is not None else dict(scores)
+    if not deciding:
         return 1.0
-    return round(1.0 - max(scores.values()), 4)
+    return round(1.0 - max(deciding.values()), 4)
 
 
 def _run_ocr(page: LoadedPage, config: Config):
@@ -172,7 +191,7 @@ def build_report(
         width=page.width,
         height=page.height,
         verdict=decide_verdict(scores, config.verdict),
-        quality_score=quality_score(scores),
+        quality_score=quality_score(scores, config.verdict),
         defects=defects,
         cv_metrics={key: round(value, 4) for key, value in raw.items()},
         not_applicable=not_applicable,

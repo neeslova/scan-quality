@@ -15,13 +15,20 @@
 чтобы предразметка в С2 показывала разметчику осмысленный порядок подозрительности.
 Настоящие пороги считаются по PR-кривым в С6, когда метки уже есть.
 
+Считать метрики заново нужно не всегда: прогон пайплайна уже сохранил их в
+отчёте построчно, и `--reports` берёт их оттуда. Это те же числа — раздел
+`cv_metrics` каждой записи, — но секунды вместо минут на корпус, и якоря
+подбираются по ровно тем страницам, по которым потом меряются метрики.
+
 Запуск:
     python -m src.metrics.calibrate_anchors --data data/raw/tobacco3482/data --limit 250
+    python -m src.metrics.calibrate_anchors --reports reports/tg_baseline.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import random
 import sys
@@ -81,6 +88,29 @@ def collect_metrics(
             on_progress(index, len(files))
 
     return values, skipped
+
+
+def metrics_from_reports(path: Path) -> dict[str, list[float]]:
+    """Сырые метрики из отчёта прогона: раздел `cv_metrics` каждой записи.
+
+    Пайплайн уже посчитал их по корпусу, и считать заново незачем — картинки
+    те же, метрики те же. Пропуски (метрика неприменима к странице) в список не
+    попадают: перцентиль по ним поехал бы.
+    """
+    values: dict[str, list[float]] = {}
+    with Path(path).open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            metrics = json.loads(line).get("cv_metrics") or {}
+            for name, value in metrics.items():
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(number):
+                    values.setdefault(name, []).append(number)
+    return values
 
 
 def suggest_anchors(
@@ -148,7 +178,13 @@ def to_yaml(suggestions: dict[str, dict[str, float]]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Подбор якорей CV-метрик по корпусу")
-    parser.add_argument("--data", type=Path, required=True, help="папка со сканами")
+    parser.add_argument("--data", type=Path, default=None, help="папка со сканами")
+    parser.add_argument(
+        "--reports",
+        type=Path,
+        default=None,
+        help="jsonl прогона: взять готовые cv_metrics вместо повторного счёта",
+    )
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument(
         "--corpus", type=Path, action="append", default=None, help="оверлей конфига под корпус"
@@ -163,19 +199,30 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     config = load_config(args.config, args.corpus)
 
-    files = [p for p in sorted(args.data.rglob("*")) if p.suffix.lower() in IMAGE_SUFFIXES]
-    if not files:
-        raise SystemExit(f"В {args.data} не найдено изображений")
+    if (args.data is None) == (args.reports is None):
+        raise SystemExit("нужен ровно один источник метрик: --data или --reports")
 
-    random.seed(args.seed)
-    sample = random.sample(files, min(args.limit, len(files)))
-    print(f"корпус: {len(files)} файлов, выборка: {len(sample)}", file=sys.stderr)
+    skipped: dict[str, int] = {}
+    if args.reports is not None:
+        values = metrics_from_reports(args.reports)
+        if not values:
+            raise SystemExit(f"В {args.reports} нет cv_metrics")
+        biggest = max(len(v) for v in values.values())
+        print(f"метрики из отчёта: {biggest} страниц", file=sys.stderr)
+    else:
+        files = [p for p in sorted(args.data.rglob("*")) if p.suffix.lower() in IMAGE_SUFFIXES]
+        if not files:
+            raise SystemExit(f"В {args.data} не найдено изображений")
 
-    def progress(done: int, total: int) -> None:
-        if done % 25 == 0 or done == total:
-            print(f"  обработано {done}/{total}", file=sys.stderr, flush=True)
+        random.seed(args.seed)
+        sample = random.sample(files, min(args.limit, len(files)))
+        print(f"корпус: {len(files)} файлов, выборка: {len(sample)}", file=sys.stderr)
 
-    values, skipped = collect_metrics(sample, config, progress)
+        def progress(done: int, total: int) -> None:
+            if done % 25 == 0 or done == total:
+                print(f"  обработано {done}/{total}", file=sys.stderr, flush=True)
+
+        values, skipped = collect_metrics(sample, config, progress)
     suggestions = suggest_anchors(values, config, args.good_pct, args.bad_pct)
 
     print(f"\n{'метка':16s}{'метрика':24s}{'было':>20s}{'стало':>20s}", file=sys.stderr)
