@@ -163,6 +163,12 @@ def attention_implementation() -> str:
     FlashAttention-2 требует Ampere и новее. На бесплатном Colab выдают T4
     (Turing, SM 7.5), где он не собирается вовсе, и единственный рабочий путь —
     штатное внимание. Проверяем железо, а не гадаем.
+
+    Третьего варианта нет: `sdpa`, которое считало бы внимание без
+    материализации матрицы и сильно сэкономило бы память, эта модель не
+    поддерживает. В `ATTENTION_CLASSES` её remote-кода только `eager` и
+    `flash_attention_2` (и их mla/mha-варианты), `_supports_sdpa` не выставлен.
+    Отсюда и потолок по разрешению на Turing — см. `RESOLUTION_MODES`.
     """
     import torch
 
@@ -250,17 +256,28 @@ class DeepSeekOCR:
         base_size, image_size, crop_mode = RESOLUTION_MODES[mode]
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        result = self._model.infer(
-            self._tokenizer,
-            prompt=PROMPT,
-            image_file=str(image_path),
-            output_path=str(output_dir),
-            base_size=base_size,
-            image_size=image_size,
-            crop_mode=crop_mode,
-            save_results=True,
-            test_compress=False,
-        )
+        try:
+            result = self._model.infer(
+                self._tokenizer,
+                prompt=PROMPT,
+                image_file=str(image_path),
+                output_path=str(output_dir),
+                base_size=base_size,
+                image_size=image_size,
+                crop_mode=crop_mode,
+                save_results=True,
+                test_compress=False,
+            )
+        finally:
+            # Освобождаем кэш аллокатора между прочтениями. Утечки здесь нет
+            # (`infer` работает под `no_grad`), но каждая страница просит блоки
+            # своего размера, и на длинном прогоне сегменты фрагментируются.
+            # На T4 запас по видеопамяти измеряется сотнями мегабайт, так что
+            # эта уборка — разница между прогоном и падением на середине.
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if isinstance(result, str) and result.strip():
             return result

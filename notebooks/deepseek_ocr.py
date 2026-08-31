@@ -68,7 +68,12 @@ bfloat16, и на T4 он идёт через эмуляцию. Это медл�
 теряется он только вместе со средой. По умолчанию работаем на нём.
 """
 
-CODE_HARDWARE = """from pathlib import Path
+CODE_HARDWARE = """import os
+from pathlib import Path
+
+# Ставится до первой инициализации CUDA. На T4 запас видеопамяти измеряется
+# сотнями мегабайт, и фрагментация сегментов съедает как раз столько.
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 # True — данные и результат в Drive (переживает удаление среды, но упирается
 # в квоту аккаунта). False — локальный диск Colab: 113 ГБ, никаких квот и
@@ -214,6 +219,34 @@ print('символов:', len(text))
 print(text[:500])
 """
 
+MARKDOWN_MODES = """## 3a. Какие режимы влезают в карту
+
+Разрешение упирается в видеопамять, и потолок надо знать до прогона, а не
+посреди него. На T4 внимание считается в лоб: `sdpa`, которое обошлось бы без
+материализации матрицы, эта модель не поддерживает — в её `ATTENTION_CLASSES`
+только `eager` и `flash_attention_2`. Поэтому `base` (1024x1024) на T4 не
+влезает, не хватает пары сотен мегабайт, а `large` тем более.
+
+Ячейка читает одну страницу каждым режимом и печатает пик занятой памяти.
+**Выбор пары — решение не техническое, а содержательное:** расхождение двух
+прочтений и есть сигнал этапа, и чем сильнее режимы отличаются входом, тем
+честнее проверка на «додумывание». Пара из двух похожих режимов даст слабый
+сигнал даже там, где скан действительно плох.
+"""
+
+CODE_MODES = """import torch
+
+for mode in ('tiny', 'small', 'base', 'gundam'):
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    try:
+        text = engine.read(sample, mode, WORK)
+        note = f'ок, {len(text)} символов'
+    except torch.cuda.OutOfMemoryError:
+        note = 'OOM'
+    print(f'{mode:8s} {note}, пик {torch.cuda.max_memory_allocated() / 2**30:.1f} ГБ')
+"""
+
 MARKDOWN_BENCH = """## 4. Замер скорости
 
 Двадцать страниц, чтобы посчитать бюджет прогона по факту, а не по догадке.
@@ -312,6 +345,8 @@ def build() -> dict:
         cell("code", CODE_INSTALL.replace("REPO_URL", REPO).replace("BRANCH_NAME", BRANCH)),
         cell("markdown", MARKDOWN_PROBE),
         cell("code", CODE_PROBE),
+        cell("markdown", MARKDOWN_MODES),
+        cell("code", CODE_MODES),
         cell("markdown", MARKDOWN_BENCH),
         cell("code", CODE_BENCH),
         cell("markdown", MARKDOWN_FULL),
