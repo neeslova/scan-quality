@@ -131,5 +131,5 @@ def test_load_asks_for_half_precision_and_sharded_weights(monkeypatch) -> None:
 
     DeepSeekOCR().load()
 
-    assert captured["torch_dtype"] is torch.float16
+    assert captured["torch_dtype"] is torch.bfloat16
     assert captured["low_cpu_mem_usage"] is True

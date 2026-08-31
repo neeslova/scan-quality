@@ -173,16 +173,22 @@ def attention_implementation() -> str:
 
 
 def model_dtype():
-    """bfloat16 на Ampere+, float16 на более старых картах.
+    """Всегда bfloat16 — тип диктует remote-код модели, а не карта.
 
-    На Turing bfloat16 не поддержан аппаратно, и карточка модели, ориентированная
-    на A100, здесь не применима буквально.
+    Соблазн взять float16 на Turing выглядит разумно: bfloat16 там не поддержан
+    аппаратно и считается через эмуляцию. Но `modeling_deepseekocr.py` зашивает
+    bfloat16 жёстко — приводит к нему тензоры изображений
+    (`image_transform(...).to(torch.bfloat16)`) и оборачивает генерацию в
+    `torch.autocast("cuda", dtype=torch.bfloat16)`. С весами в float16 половины
+    модели расходятся: текстовые эмбеддинги выходят Half, выход визуального
+    проектора — Float, и `masked_scatter_` в `forward` падает на разнице типов.
+
+    Выбирать тип по железу здесь нельзя: он часть контракта модели. Плата —
+    эмуляция bfloat16 на T4, то есть медленнее; это видно в замере скорости.
     """
     import torch
 
-    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
-        return torch.bfloat16
-    return torch.float16
+    return torch.bfloat16
 
 
 class DeepSeekOCR:
