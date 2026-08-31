@@ -56,6 +56,17 @@ DEFAULT_MODES = ("tiny", "base")
 # `<|ref|>`/`<|det|>` из режима grounding только зашумили бы их.
 PROMPT = "<image>\nFree OCR. "
 
+# Потолок длины генерации. Remote-код модели зашивает 8192 токена, и на здоровой
+# странице это без разницы — она укладывается в тысячу с небольшим. Но модель,
+# залипшая в повторе, идёт до упора: замер на живом корпусе дал медиану 38 с при
+# максимуме 670 с на страницу, разброс в 94 раза. Дороже всего обходятся ровно
+# те страницы, ради которых этап и затеян.
+#
+# 2048 токенов — это примерно 5-7 тысяч символов, вдвое больше плотной А4.
+# Обрезанная страница не теряется как наблюдение: упёршийся в потолок текст сам
+# по себе означает, что модель ушла в повтор, и детект зацикливания это увидит.
+MAX_NEW_TOKENS = 2048
+
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".gif"})
 PDF_SUFFIXES = frozenset({".pdf"})
 
@@ -197,6 +208,21 @@ def model_dtype():
     return torch.bfloat16
 
 
+def _capped_generate(generate, limit: int = MAX_NEW_TOKENS):
+    """Оборачивает `generate`, срезая запрошенную длину до `limit`.
+
+    Иначе никак: `infer` из remote-кода передаёт `max_new_tokens=8192` явным
+    аргументом, а явный аргумент бьёт любой `generation_config`. Параметра,
+    которым это регулируется снаружи, у `infer` нет.
+    """
+
+    def wrapped(*args, **kwargs):
+        kwargs["max_new_tokens"] = min(kwargs.get("max_new_tokens", limit), limit)
+        return generate(*args, **kwargs)
+
+    return wrapped
+
+
 class DeepSeekOCR:
     """Обёртка над моделью. Грузится один раз, читает страницу в заданном режиме."""
 
@@ -241,6 +267,7 @@ class DeepSeekOCR:
         # только избыточны, но и опасны — на модели, разложенной accelerate,
         # ручной перенос ломает расставленные хуки.
         self._model = self._model.eval()
+        self._model.generate = _capped_generate(self._model.generate)
 
     def read(self, image_path: Path, mode: str, output_dir: Path) -> str:
         """Текст страницы в заданном режиме разрешения.

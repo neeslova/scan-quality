@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 
 from src.ocr.deepseek import (
+    MAX_NEW_TOKENS,
     RESOLUTION_MODES,
     DeepSeekOCR,
     PageResult,
+    _capped_generate,
     collect_jobs,
     load_done,
 )
@@ -103,8 +105,8 @@ def test_self_consistency_modes_differ_in_resolution() -> None:
     assert len(sizes) == 2
 
 
-def _fake_transformers(monkeypatch) -> dict:
-    """Подставной `transformers`; возвращает словарь, куда лягут аргументы загрузки.
+def _fake_transformers(monkeypatch):
+    """Подставной `transformers`; возвращает пару (аргументы загрузки, модель).
 
     Настоящая модель требует CUDA, которой в тестовом окружении нет, а проверять
     надо именно аргументы: каждая ошибка в них стоит убитого сеанса Colab.
@@ -116,17 +118,30 @@ def _fake_transformers(monkeypatch) -> dict:
 
     captured: dict = {}
 
+    class _Model:
+        def __init__(self) -> None:
+            self.asked: list = []
+
+        def eval(self):
+            return self
+
+        def generate(self, **kwargs):
+            self.asked.append(kwargs)
+            return "ids"
+
+    model = _Model()
+
     class _AutoModel:
         @staticmethod
         def from_pretrained(model_id: str, **kwargs):
             captured.update(kwargs)
-            return types.SimpleNamespace(eval=lambda: "модель")
+            return model
 
     fake = types.ModuleType("transformers")
     fake.AutoModel = _AutoModel
     fake.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **k: "токенизатор")
     monkeypatch.setitem(sys.modules, "transformers", fake)
-    return captured
+    return captured, model
 
 
 def test_load_asks_for_bfloat16(monkeypatch) -> None:
@@ -138,7 +153,7 @@ def test_load_asks_for_bfloat16(monkeypatch) -> None:
     """
     import torch
 
-    captured = _fake_transformers(monkeypatch)
+    captured, _ = _fake_transformers(monkeypatch)
 
     DeepSeekOCR().load()
 
@@ -155,7 +170,7 @@ def test_load_puts_weights_straight_on_the_gpu(monkeypatch) -> None:
     """
     import torch
 
-    captured = _fake_transformers(monkeypatch)
+    captured, _ = _fake_transformers(monkeypatch)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
 
@@ -166,8 +181,35 @@ def test_load_puts_weights_straight_on_the_gpu(monkeypatch) -> None:
 
 def test_load_without_gpu_does_not_ask_for_placement(monkeypatch) -> None:
     """Без карты `device_map` не передаём: раскладывать не по чему."""
-    captured = _fake_transformers(monkeypatch)
+    captured, _ = _fake_transformers(monkeypatch)
 
     DeepSeekOCR().load()
 
     assert "device_map" not in captured
+
+
+def test_generation_length_is_capped(monkeypatch) -> None:
+    """Страница, залипшая в повторе, идёт до зашитых 8192 токенов.
+
+    Замер на живом корпусе: медиана 38 с, максимум 670 с на страницу. Дороже
+    всего обходятся ровно те страницы, ради которых этап и затеян, и без
+    потолка корпус не считается за разумное время.
+    """
+    _, model = _fake_transformers(monkeypatch)
+
+    engine = DeepSeekOCR()
+    engine.load()
+    engine._model.generate(max_new_tokens=8192)
+    engine._model.generate()
+
+    assert [call["max_new_tokens"] for call in model.asked] == [MAX_NEW_TOKENS, MAX_NEW_TOKENS]
+
+
+def test_generation_cap_leaves_shorter_requests_alone() -> None:
+    """Потолок срезает, а не назначает: просьбу короче он не трогает."""
+    asked: list = []
+    capped = _capped_generate(lambda **kwargs: asked.append(kwargs), limit=100)
+
+    capped(max_new_tokens=10)
+
+    assert asked == [{"max_new_tokens": 10}]
