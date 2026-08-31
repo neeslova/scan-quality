@@ -103,18 +103,16 @@ def test_self_consistency_modes_differ_in_resolution() -> None:
     assert len(sizes) == 2
 
 
-def test_load_asks_for_half_precision_and_sharded_weights(monkeypatch) -> None:
-    """Без `torch_dtype` веса материализуются на CPU в float32 — и сеанс умирает.
+def _fake_transformers(monkeypatch) -> dict:
+    """Подставной `transformers`; возвращает словарь, куда лягут аргументы загрузки.
 
-    Три миллиарда параметров в float32 — почти 12 ГБ, а бесплатный Colab даёт
-    12.7 ГБ ОЗУ: загрузка убивает сеанс, не дойдя до карты. Это уже стоило
-    одного прогона. Проверяем на подставном `transformers`, потому что настоящая
-    модель требует CUDA, которой в тестовом окружении нет.
+    Настоящая модель требует CUDA, которой в тестовом окружении нет, а проверять
+    надо именно аргументы: каждая ошибка в них стоит убитого сеанса Colab.
+    Подставная модель намеренно не умеет `.cuda()` и `.to()` — если код попробует
+    двигать её руками, тест упадёт сам.
     """
     import sys
     import types
-
-    import torch
 
     captured: dict = {}
 
@@ -128,8 +126,48 @@ def test_load_asks_for_half_precision_and_sharded_weights(monkeypatch) -> None:
     fake.AutoModel = _AutoModel
     fake.AutoTokenizer = types.SimpleNamespace(from_pretrained=lambda *a, **k: "токенизатор")
     monkeypatch.setitem(sys.modules, "transformers", fake)
+    return captured
+
+
+def test_load_asks_for_bfloat16(monkeypatch) -> None:
+    """Без `torch_dtype` веса материализуются в float32 — сеанс умирает по ОЗУ.
+
+    Тип именно bfloat16, и не по свойствам карты: remote-код модели приводит к
+    нему тензоры изображений и оборачивает генерацию в `autocast(bfloat16)`, так
+    что float16 разваливает модель на стыке визуальной и текстовой частей.
+    """
+    import torch
+
+    captured = _fake_transformers(monkeypatch)
 
     DeepSeekOCR().load()
 
     assert captured["torch_dtype"] is torch.bfloat16
     assert captured["low_cpu_mem_usage"] is True
+
+
+def test_load_puts_weights_straight_on_the_gpu(monkeypatch) -> None:
+    """Чекпойнт — один шард на 6.7 ГБ, и копия в ОЗУ не помещается.
+
+    `low_cpu_mem_usage` при единственном шарде не выигрывает ничего: тензоры
+    плюс mmap того же файла дают около 13 ГБ при 12.7 ГБ у бесплатного Colab.
+    Спасает только раскладка сразу на карту.
+    """
+    import torch
+
+    captured = _fake_transformers(monkeypatch)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+
+    DeepSeekOCR().load()
+
+    assert captured["device_map"] == {"": 0}
+
+
+def test_load_without_gpu_does_not_ask_for_placement(monkeypatch) -> None:
+    """Без карты `device_map` не передаём: раскладывать не по чему."""
+    captured = _fake_transformers(monkeypatch)
+
+    DeepSeekOCR().load()
+
+    assert "device_map" not in captured

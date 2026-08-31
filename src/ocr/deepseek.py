@@ -207,26 +207,34 @@ class DeepSeekOCR:
         dtype = model_dtype()
         logger.info("Загрузка %s (attention=%s, dtype=%s)", self._model_id, attention, dtype)
 
+        # ОЗУ здесь узкое место, а не видеопамять: у бесплатного Colab её 12.7 ГБ.
+        # `torch_dtype` не даёт материализовать веса в float32 (было бы около
+        # 12 ГБ на трёхмиллиардной модели). Но и этого мало: чекпойнт лежит
+        # одним шардом на 6.7 ГБ, поэтому `low_cpu_mem_usage` со своей загрузкой
+        # «по шарду за раз» не выигрывает ничего — шард ровно один. Копия
+        # тензоров плюс mmap того же файла дают около 13 ГБ, и сеанс умирает.
+        #
+        # `device_map` снимает это: accelerate раскладывает веса по карте
+        # потензорно, прямо из mmap, и полной копии в ОЗУ не возникает вовсе.
+        # Указан явный `{"": 0}`, а не `"auto"`: последний требует от модели
+        # объявленного `_no_split_modules`, которого у remote-кода может не быть,
+        # а размазывать по устройствам нам и не нужно — карта одна.
+        placement = {"device_map": {"": 0}} if torch.cuda.is_available() else {}
+
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = AutoModel.from_pretrained(
             self._model_id,
             trust_remote_code=True,
             use_safetensors=True,
             _attn_implementation=attention,
-            # Без этих двух строк веса сначала материализуются на CPU в float32 —
-            # около 12 ГБ на трёхмиллиардной модели, — и бесплатный Colab с его
-            # 12.7 ГБ ОЗУ убивает сеанс раньше, чем что-либо попадёт на карту.
-            # `torch_dtype` грузит сразу в нужной точности, `low_cpu_mem_usage`
-            # льёт пошардово через meta-device, а не собирает копию целиком.
             torch_dtype=dtype,
             low_cpu_mem_usage=True,
+            **placement,
         )
+        # Модель уже на карте и в нужном типе: `.cuda()` и `.to(dtype)` здесь не
+        # только избыточны, но и опасны — на модели, разложенной accelerate,
+        # ручной перенос ломает расставленные хуки.
         self._model = self._model.eval()
-        if torch.cuda.is_available():
-            # `.to(dtype)` избыточен после `torch_dtype` и оставлен страховкой:
-            # визуальный энкодер собирается remote-кодом, и приводить его
-            # подмодули к типу `from_pretrained` обязан не при любой сборке.
-            self._model = self._model.cuda().to(dtype)
 
     def read(self, image_path: Path, mode: str, output_dir: Path) -> str:
         """Текст страницы в заданном режиме разрешения.
