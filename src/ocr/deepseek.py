@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,6 +162,27 @@ def collect_jobs(root: Path) -> list[PageJob]:
         pages = _pdf_page_count(path) if suffix in PDF_SUFFIXES else 1
         for index in range(pages):
             jobs.append(PageJob(path=path, page=index, sha256=digest, relative=relative))
+    return jobs
+
+
+# Сид перемешивания. Порядок обхода фиксирован, но не алфавитный.
+#
+# Сортировка по пути кажется безобидной, а на деле делает частичный результат
+# бесполезным: корпус разложен по папкам классов, и в `Data iz tg` заглавная
+# `Good` идёт раньше строчной `bad`. Первая половина прогона — сплошь хорошие
+# сканы, и пока он не дойдёт до середины, считать не по чем: в выборке один
+# класс, AUC не определён. А прогон длинный и рвётся по таймауту сессии.
+#
+# Сид фиксирован, поэтому порядок воспроизводим между запусками, а докатка от
+# него не зависит вовсе — она сверяется по sha256.
+SHUFFLE_SEED = 20260831
+
+
+def plan_jobs(root: Path, shuffle: bool = True) -> list[PageJob]:
+    """Страницы корпуса в порядке обработки: перемешанном, но воспроизводимом."""
+    jobs = collect_jobs(root)
+    if shuffle:
+        random.Random(SHUFFLE_SEED).shuffle(jobs)
     return jobs
 
 
@@ -367,6 +389,7 @@ def run(
     limit: Optional[int] = None,
     workdir: Optional[Path] = None,
     engine: Optional[DeepSeekOCR] = None,
+    shuffle: bool = True,
 ) -> int:
     """Читает корпус и дописывает результаты. Возвращает число обработанных страниц.
 
@@ -375,13 +398,17 @@ def run(
     весов по 6.3 ГБ: T4 столько не держит, загрузка падает с OOM, `_model`
     остаётся пустым, и каждая следующая страница честно пробует загрузить снова.
     Двадцать страниц — двадцать бесплодных загрузок и ни одного прочтения.
+
+    `shuffle` держит порядок обхода перемешанным (см. `SHUFFLE_SEED`), чтобы
+    частичный результат оставался пригодным для метрик. Отключать его стоит
+    только там, где нужен буквальный порядок файлов.
     """
     for mode in modes:
         if mode not in RESOLUTION_MODES:
             raise SystemExit(f"Неизвестный режим {mode}; есть: {', '.join(RESOLUTION_MODES)}")
 
     workdir = workdir or out_path.parent / "_deepseek_work"
-    jobs = collect_jobs(root)
+    jobs = plan_jobs(root, shuffle=shuffle)
     done = load_done(out_path)
     pending = [job for job in jobs if job.key not in done]
     if limit is not None:
@@ -445,6 +472,11 @@ def main() -> None:
         help="режимы разрешения через запятую: " + ", ".join(RESOLUTION_MODES),
     )
     parser.add_argument("--limit", type=int, default=None, help="взять только N страниц (замер)")
+    parser.add_argument(
+        "--ordered",
+        action="store_true",
+        help="обходить корпус по алфавиту вместо перемешивания",
+    )
     parser.add_argument("--workdir", type=Path, default=None, help="временные файлы")
     args = parser.parse_args()
 
@@ -454,7 +486,14 @@ def main() -> None:
         raise SystemExit(f"Не папка: {args.data}")
 
     modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
-    processed = run(args.data, args.out, modes=modes, limit=args.limit, workdir=args.workdir)
+    processed = run(
+        args.data,
+        args.out,
+        modes=modes,
+        limit=args.limit,
+        workdir=args.workdir,
+        shuffle=not args.ordered,
+    )
     logger.info("обработано страниц: %d -> %s", processed, args.out)
 
 

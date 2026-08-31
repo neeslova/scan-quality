@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from src.ocr.deepseek import (
     MAX_NEW_TOKENS,
@@ -17,6 +18,7 @@ from src.ocr.deepseek import (
     _capped_generate,
     collect_jobs,
     load_done,
+    plan_jobs,
 )
 from tests import factories as fx
 
@@ -213,3 +215,41 @@ def test_generation_cap_leaves_shorter_requests_alone() -> None:
     capped(max_new_tokens=10)
 
     assert asked == [{"max_new_tokens": 10}]
+
+
+def _corpus(root: Path, folders: tuple[str, ...], count: int) -> None:
+    for folder in folders:
+        (root / folder).mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            fx.save(fx.text_page(width=60, height=80), root / folder / f"{index:02d}.png")
+
+
+def test_plan_shuffles_so_a_partial_run_sees_both_classes(tmp_path) -> None:
+    """Алфавитный обход делает начало прогона односортным.
+
+    Корпус разложен по папкам классов, и заглавная `Good` сортируется раньше
+    строчной `bad`: при обходе по алфавиту первая половина прогона — сплошь
+    хорошие сканы. Прогон длинный и рвётся по таймауту сессии, а по частичному
+    результату метрики тогда не считаются вовсе — в выборке один класс.
+    """
+    _corpus(tmp_path, ("Good", "bad"), count=15)
+
+    head = {job.relative.split("/")[0] for job in plan_jobs(tmp_path)[:10]}
+
+    assert head == {"Good", "bad"}
+
+
+def test_plan_order_is_reproducible(tmp_path) -> None:
+    """Порядок фиксирован сидом: два обхода одного корпуса совпадают."""
+    _corpus(tmp_path, ("Good",), count=10)
+
+    assert [j.key for j in plan_jobs(tmp_path)] == [j.key for j in plan_jobs(tmp_path)]
+
+
+def test_plan_can_keep_the_alphabetical_order(tmp_path) -> None:
+    """Перемешивание отключаемо: иногда нужен буквальный порядок файлов."""
+    _corpus(tmp_path, ("Good",), count=5)
+
+    names = [job.relative for job in plan_jobs(tmp_path, shuffle=False)]
+
+    assert names == sorted(names)
