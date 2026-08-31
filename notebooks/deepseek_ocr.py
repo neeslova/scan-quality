@@ -88,9 +88,9 @@ else:
     ROOT = Path('/content/scanq')
 
 ROOT.mkdir(parents=True, exist_ok=True)
-# Пара режимов для self-consistency. `base` на T4 не влезает в видеопамять,
-# поэтому пара подбирается замером — см. раздел 3a.
-MODES = ('tiny', 'small')
+# Пара режимов для self-consistency, подобранная замером (раздел 3a): на T4
+# влезают все режимы, а `tiny` против `base` даёт самый широкий разрыв.
+MODES = ('tiny', 'base')
 
 DATA = ROOT / 'Data iz tg'
 OUT = ROOT / 'deepseek_tg.jsonl'
