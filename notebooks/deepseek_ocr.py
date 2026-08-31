@@ -71,11 +71,26 @@ remote-код. `flash-attn` ставится **только на Ampere+** — �
 Клонируется **рабочая ветка**, не `main`: слой DeepSeek в `main` ещё не влит.
 Ячейка печатает последний коммит — если в нём нет ожидаемой работы, дальше идти
 незачем, прогон всё равно упадёт на импорте.
+
+Ячейку можно перезапускать: если клон уже есть, он подтягивается, а не роняет
+ячейку. Это не косметика — после падения по ОЗУ ядро перезапускается, а диск
+Colab остаётся, и одноразовый `clone` молча оставил бы старый код.
 """
 
-CODE_INSTALL = """!git clone -q -b BRANCH_NAME REPO_URL /content/scan-quality
+CODE_INSTALL = """import os
+
+# Клонируем, если папки нет, и подтягиваем, если есть. Иначе ячейка одноразовая:
+# после падения по ОЗУ ядро перезапускается, а диск Colab переживает это, и
+# `git clone` падает на непустой папке — оставляя ровно тот код, из-за которого
+# сеанс и умер.
+if os.path.isdir('/content/scan-quality/.git'):
+    !git -C /content/scan-quality fetch -q origin BRANCH_NAME
+    !git -C /content/scan-quality reset --hard -q FETCH_HEAD
+else:
+    !git clone -q -b BRANCH_NAME REPO_URL /content/scan-quality
+
 !git -C /content/scan-quality log -1 --oneline
-!ls /content/scan-quality/src/ocr/deepseek.py  # нет файла -> клонирована не та ветка
+!ls /content/scan-quality/src/ocr/deepseek.py  # нет файла -> ветка не та
 !pip install -q transformers==4.46.3 tokenizers==0.20.3 accelerate einops addict easydict pymupdf
 
 import torch
