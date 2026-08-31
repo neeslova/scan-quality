@@ -64,3 +64,9 @@ verdict:
   # Убрана она только из решения — иначе правило «хоть одна метка выше порога»
   # отдаёт вердикт метке, которая ничего не знает.
   ignore: [low_resolution]
+  # Обученное сведение вместо правила «один минус худший дефект».
+  # Получено из reports/tg_baseline.jsonl и эталона:
+  #   python -m src.models.from_metrics --reports reports/tg_baseline.jsonl   #       --golden data/labeled/golden_tg.jsonl --save models/verdict_tg.joblib
+  # Честная 5-fold: ROC-AUC 0.770 против 0.505 у правила. Модель обучена на этом
+  # корпусе и на другой без переобучения не переносится.
+  model: models/verdict_tg.joblib

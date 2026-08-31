@@ -62,6 +62,12 @@ DEFAULT_FOLDS = 5
 # пропустить брак дороже, чем отвергнуть годную страницу (раздел 4 плана).
 DEFAULT_TARGET_RECALL = 0.85
 
+# Полнота во второй точке — та же, что у `calibrate.confident_recall`. Она задаёт
+# порог «бесспорно плохо». Обе точки заданы полнотой, а не точностью, ровно по той
+# же причине, что и у шкал меток: полнота монотонна по порогу, и порядок двух
+# точек тем самым гарантирован по построению.
+DEFAULT_CONFIDENT_RECALL = 0.50
+
 # Порог отсечки для вердикта из непрерывного риска. Только два класса: `acceptable`
 # у обученной шкалы нет — серую зону вводят порогами уровнем выше, и смешивать
 # это с обучением незачем.
@@ -294,6 +300,79 @@ def format_report(
     return "\n".join(lines) + "\n"
 
 
+def save_bundle(
+    data: Dataset,
+    path: Path,
+    target_recall: float = DEFAULT_TARGET_RECALL,
+    confident_recall: float = DEFAULT_CONFIDENT_RECALL,
+    folds: int = DEFAULT_FOLDS,
+) -> dict:
+    """Обучает модель на всём наборе и кладёт её рядом с порогами и именами метрик.
+
+    Порядок признаков сохраняется вместе с моделью намеренно: матрица собирается
+    из словаря `cv_metrics`, а словарь порядка не гарантирует. Разошедшийся
+    порядок не упал бы, а тихо перепутал бы признаки местами — и модель
+    продолжила бы выдавать правдоподобные числа.
+
+    Пороги считаются по out-of-fold риску, а не по обучающему: на обучающем они
+    вышли бы оптимистично смещёнными, и рабочая точка на живых данных оказалась
+    бы не той, что обещана.
+    """
+    risk, _ = out_of_fold_risk(data, folds)
+    pipeline = _pipeline()
+    pipeline.fit(data.features, data.labels)
+
+    payload = {
+        "pipeline": pipeline,
+        "names": list(data.names),
+        "tau_low": threshold_for_recall(data.labels, risk, target_recall),
+        "tau_high": threshold_for_recall(data.labels, risk, confident_recall),
+        "pages": int(len(data.labels)),
+        "target_recall": float(target_recall),
+        "confident_recall": float(confident_recall),
+    }
+
+    import joblib
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(payload, path)
+    logger.info("модель сохранена в %s", path)
+    return payload
+
+
+def load_bundle(path: Path) -> dict:
+    """Модель, имена признаков и пороги — тем же составом, что сохранены.
+
+    Файла может не быть: `models/` не хранится в репозитории, как и ONNX-сеть.
+    Сообщение поэтому говорит, чем его получить, — иначе на чистом клоне вылезал
+    бы голый `FileNotFoundError` из середины пайплайна.
+    """
+    import joblib
+
+    if not Path(path).is_file():
+        raise FileNotFoundError(
+            f"{path}: модели вердикта нет. Обучить: python -m src.models.from_metrics "
+            f"--reports reports/<корпус>_baseline.jsonl --golden data/labeled/<эталон>.jsonl "
+            f"--save {path}"
+        )
+    payload = joblib.load(path)
+    missing = {"pipeline", "names", "tau_low", "tau_high"} - set(payload)
+    if missing:
+        raise ValueError(f"{path}: в модели нет полей {sorted(missing)}")
+    return payload
+
+
+def bundle_risk(metrics: dict, bundle: dict) -> float:
+    """Риск страницы по её сырым метрикам. Порядок признаков берётся из модели.
+
+    Метрика, которой на странице нет, идёт как пропуск: заполнит её тот же
+    `SimpleImputer`, что обучался вместе с моделью. Подставить сюда ноль было бы
+    хуже молчания — ноль у половины метрик означает «идеально».
+    """
+    row = [[_as_float(metrics.get(name)) for name in bundle["names"]]]
+    return float(bundle["pipeline"].predict_proba(np.asarray(row, dtype=float))[0, 1])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports", type=Path, required=True, help="jsonl прогона пайплайна")
@@ -301,6 +380,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None, help="куда записать отчёт")
     parser.add_argument("--folds", type=int, default=DEFAULT_FOLDS)
     parser.add_argument("--target-recall", type=float, default=DEFAULT_TARGET_RECALL)
+    parser.add_argument("--confident-recall", type=float, default=DEFAULT_CONFIDENT_RECALL)
+    parser.add_argument("--save", type=Path, default=None, help="куда сохранить модель")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -317,6 +398,15 @@ def main() -> None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(report, encoding="utf-8")
         logger.info("отчёт записан в %s", args.out)
+
+    if args.save:
+        payload = save_bundle(
+            data, args.save, args.target_recall, args.confident_recall, args.folds
+        )
+        print(
+            f"модель: {args.save}, пороги "
+            f"acceptable >= {payload['tau_low']:.3f}, bad >= {payload['tau_high']:.3f}"
+        )
 
 
 if __name__ == "__main__":

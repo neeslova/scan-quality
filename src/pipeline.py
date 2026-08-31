@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Union
 
@@ -59,6 +60,48 @@ def decide_verdict(scores: Mapping[str, float], cfg: VerdictConfig) -> Verdict:
     if any(score > cfg.tau_low for score in deciding.values()):
         return "acceptable"
     return "good"
+
+
+@lru_cache(maxsize=4)
+def shared_verdict_model(path: str) -> dict:
+    """Обученная модель сведения, загруженная один раз на процесс."""
+    from src.models.from_metrics import load_bundle
+
+    bundle = load_bundle(Path(path))
+    logger.info(
+        "модель вердикта: %s (%d признаков, обучена на %d страницах)",
+        path,
+        len(bundle["names"]),
+        bundle.get("pages", 0),
+    )
+    return bundle
+
+
+def learned_verdict(raw: Mapping[str, float], config: Config) -> Optional[tuple[Verdict, float]]:
+    """Вердикт и сводный балл по обученной модели, если она задана конфигом.
+
+    Возвращает `None`, когда модели нет: это не ошибка, а штатный режим —
+    правило `1 - max` остаётся значением по умолчанию.
+
+    Ошибку загрузки, наоборот, глушить нельзя. Молчаливый откат на старое
+    правило означал бы, что демонстрация показывает прежние вердикты, пока все
+    уверены, что смотрят на новые.
+    """
+    if not config.verdict.model:
+        return None
+
+    from src.models.from_metrics import bundle_risk
+
+    bundle = shared_verdict_model(config.verdict.model)
+    risk = bundle_risk(dict(raw), bundle)
+
+    if risk >= bundle["tau_high"]:
+        verdict: Verdict = "bad"
+    elif risk >= bundle["tau_low"]:
+        verdict = "acceptable"
+    else:
+        verdict = "good"
+    return verdict, round(1.0 - risk, 4)
 
 
 def apply_anchors(scores: Mapping[str, float], config: Config) -> dict[str, float]:
@@ -177,6 +220,11 @@ def build_report(
     defects.sort(key=lambda d: d.score, reverse=True)
 
     name = page.source.name if page.page == 0 else f"{page.source.name}#{page.page + 1}"
+    decision = learned_verdict(raw, config) or (
+        decide_verdict(scores, config.verdict),
+        quality_score(scores, config.verdict),
+    )
+
     return QualityReport(
         pipeline_version="+".join(
             part
@@ -190,8 +238,8 @@ def build_report(
         image=name,
         width=page.width,
         height=page.height,
-        verdict=decide_verdict(scores, config.verdict),
-        quality_score=quality_score(scores, config.verdict),
+        verdict=decision[0],
+        quality_score=decision[1],
         defects=defects,
         cv_metrics={key: round(value, 4) for key, value in raw.items()},
         not_applicable=not_applicable,
